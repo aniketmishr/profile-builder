@@ -1,0 +1,16 @@
+# Render Blueprint. Create the database on Neon first and paste its URL when prompted.
+services:
+  - type: web
+    name: profile-builder
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: SESSION_TOKEN_SECRET
+        generateValue: true
+      - key: ENABLE_DEBUG_ENDPOINTS
+        value: "true"

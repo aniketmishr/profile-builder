@@ -1,0 +1,116 @@
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi.responses import PlainTextResponse
+
+from app import services
+from app.config import get_settings
+from app.deps import get_repo
+from app.models import DebriefSession
+from app.repo import ScopedRepo
+from app.schemas import (
+    ContextOut, FactHistory, FactOut, FactsIn, FactsWritten, HistoryOut, ProfileOut,
+    SessionCreate, SessionOut, SessionRef,
+)
+from app.security import make_session_token
+
+router = APIRouter(prefix="/v1")
+debug_router = APIRouter(prefix="/v1", tags=["dev"])
+
+
+def _session_out(row: DebriefSession, created: bool) -> SessionOut:
+    token = make_session_token(row.id, row.tenant_id)
+    base = get_settings().public_base_url.rstrip("/")
+    return SessionOut(
+        session_id=row.id, status=row.status, created=created,
+        chat_url=f"{base}/chat/{row.id}?token={token}",
+        tenant_id=row.tenant_id, agent_id=row.agent_id, end_user_id=row.end_user_id,
+        task_id=row.task_id, created_at=row.created_at,
+    )
+
+
+# ---- sessions ---------------------------------------------------------------
+@router.post(
+    "/sessions", response_model=SessionOut, tags=["sessions"],
+    status_code=201,
+    responses={200: {"description": "Same idempotency_key seen before: existing session returned"},
+               403: {"description": "tenant_id in body differs from the API key's tenant"},
+               409: {"description": "idempotency_key reused for a different task or end user"}},
+)
+def create_session(payload: SessionCreate, response: Response, repo: ScopedRepo = Depends(get_repo)):
+    """Called by the admin panel when a task closes. Idempotent on `idempotency_key`."""
+    row, created = services.create_session(repo, payload)
+    response.status_code = 201 if created else 200
+    return _session_out(row, created)
+
+
+@router.get("/sessions/{session_id}", response_model=SessionOut, tags=["sessions"])
+def get_session(session_id: str, repo: ScopedRepo = Depends(get_repo)):
+    row = repo.get_session(session_id)
+    if row is None:
+        raise HTTPException(404, "session not found")
+    return _session_out(row, False)
+
+
+# ---- profiles ---------------------------------------------------------------
+@router.get("/profiles/{end_user_id}", response_model=ProfileOut, tags=["profiles"])
+def get_profile(end_user_id: str, repo: ScopedRepo = Depends(get_repo)):
+    """Merged view: the current value of every fact. No LLM on this path."""
+    eu = services.require_end_user(repo, end_user_id)
+    facts = repo.current_facts(end_user_id)
+    return ProfileOut(
+        end_user_id=eu.id, tenant_id=eu.tenant_id, display_name=eu.display_name,
+        profile_version=eu.profile_version, updated_at=eu.updated_at,
+        facts=[FactOut.model_validate(f) for f in facts],
+    )
+
+
+@router.get("/profiles/{end_user_id}/history", response_model=HistoryOut, tags=["profiles"])
+def get_history(end_user_id: str, repo: ScopedRepo = Depends(get_repo)):
+    """Every version of every fact (oldest first) plus the sessions they came from."""
+    eu = services.require_end_user(repo, end_user_id)
+    facts = repo.all_facts(end_user_id)
+    grouped: dict[tuple[str, str], list[FactOut]] = {}
+    for f in facts:
+        grouped.setdefault((f.category, f.key), []).append(FactOut.model_validate(f))
+    sessions = repo.sessions_by_ids({f.source_session_id for f in facts})
+    return HistoryOut(
+        end_user_id=eu.id, tenant_id=eu.tenant_id,
+        history=[FactHistory(category=c, key=k, versions=v) for (c, k), v in grouped.items()],
+        sessions=[SessionRef(
+            session_id=s.id, task_id=s.task_id, task_type=s.task_context.get("type"),
+            task_title=s.task_context.get("title"), agent_id=s.agent_id, created_at=s.created_at,
+        ) for s in sessions],
+    )
+
+
+@router.get(
+    "/profiles/{end_user_id}/context", tags=["profiles"],
+    response_model=ContextOut, responses={200: {"content": {"text/plain": {}}}},
+)
+def get_context(
+    end_user_id: str,
+    max_tokens: int | None = Query(None, ge=20, le=4000, description="Approximate token budget"),
+    format: Literal["json", "text"] = "json",
+    repo: ScopedRepo = Depends(get_repo),
+):
+    """LLM-ready text block, built deterministically from current facts."""
+    eu = services.require_end_user(repo, end_user_id)
+    text, truncated = services.build_context(eu, repo.current_facts(end_user_id), max_tokens)
+    if format == "text":
+        return PlainTextResponse(text)
+    return ContextOut(end_user_id=eu.id, context=text, approx_tokens=(len(text) + 3) // 4, truncated=truncated)
+
+
+# ---- dev only: write facts by hand (day 2 replaces this caller with the extractor) -------------
+@debug_router.post("/profiles/{end_user_id}/facts", response_model=FactsWritten)
+def write_facts(end_user_id: str, body: FactsIn, repo: ScopedRepo = Depends(get_repo)):
+    """Enabled only when ENABLE_DEBUG_ENDPOINTS=true. Uses the same write path as extraction will."""
+    written, unchanged, version = services.apply_facts(
+        repo, end_user_id, body.source_session_id, body.facts, provenance={"origin": "manual"},
+    )
+    return FactsWritten(
+        written=[FactOut.model_validate(f) for f in written],
+        unchanged=[FactOut.model_validate(f) for f in unchanged],
+        profile_version=version,
+    )
