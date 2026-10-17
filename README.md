@@ -18,7 +18,8 @@ The AI debrief chat, extraction and voice come on top of this on Days 2 and 3.
 | Dev preview `POST /v1/sessions/{id}/plan-preview` | done, gated by `ENABLE_DEBUG_ENDPOINTS` |
 | FR-2 debrief conversation API: persisted turns, skip/end, adaptive follow-ups, 7-question cap, session-token auth | done (slice 2) |
 | FR-4 structured extraction (schema-valid, evidence-verified) + confirm/edit/discard, saved via one transaction | done (slice 3) |
-| Chat UI, mock admin panel, FR-3 voice, worker/webhook/viewer | not yet (next slices) |
+| FR-2 chat UI (embeddable, session token, review/confirm screen), FR-7 mock admin panel + profile viewer | done (slice 4) |
+| FR-3 voice, worker + jobs table, `profile.updated` webhook, dashboard | not yet (next slices) |
 | `/chat/{session_id}` page that `chat_url` points to | not yet (Day 2), the URL is generated and its token is verifiable |
 
 ## Layout
@@ -36,7 +37,8 @@ app/
   llm/          provider interface, validate-and-repair, Gemini provider
   prompts/      versioned prompt files (planner_v1.md)
   models.py  schemas.py  security.py  config.py  db.py  logging.py  ids.py
-migrations/     Alembic (0001_init)
+web/            React + TypeScript app: embeddable chat, mock admin panel, profile viewer
+migrations/     Alembic (0001_init ... 0003_extraction)
 docs/           decisions/ (ADRs), slices.md. Agents: read AGENTS.md first
 scripts/        seed.py, smoke.py
 tests/          sessions, profiles, isolation
@@ -91,6 +93,8 @@ budget, and tenant isolation through every endpoint. Both backends pass.
 | `LLM_MODEL` | required with a provider: copy the current model id from Google AI Studio |
 | `GEMINI_API_KEY` | key from Google AI Studio |
 | `LLM_TIMEOUT_SECONDS` / `LLM_TURN_TIMEOUT_SECONDS` / `MAX_QUESTIONS` | default `8` / `4` / `7` |
+| `FRAME_ANCESTORS` | default `*`: origins allowed to embed the chat in an iframe. Set to your admin panel's origin |
+| `STATIC_DIR` | built web app location (default `app/static`) |
 | `AUTO_EXTRACT` | default `true`: start extraction in the background when a debrief completes |
 | `EXTRACTION_TIMEOUT_SECONDS` / `MAX_EXTRACTED_FACTS` / `EXTRACTION_STALE_SECONDS` | default `20` / `20` / `120` |
 | `PRECOMPUTE_PLANS` | default `true`: build the question plan in the background at intake |
@@ -169,6 +173,30 @@ Status codes: `201` new session, `200` duplicate call, `401` bad key, `403` body
 - Token counting is a character estimate, not a real tokenizer.
 - No rate limiting, key rotation endpoint or webhook yet. Keys are created with `scripts/seed.py`.
 - `chat_url` points to a page that does not exist until Day 2.
+
+## The web app (chat, mock admin panel, profile viewer)
+
+Open `https://<your-app>/admin`, paste a tenant API key, and press **Debrief** on a task: the chat opens in an iframe,
+the AI asks its questions, and after the last one you review the proposed facts (edit or discard), then Save. The
+**Profile viewer** tab shows current facts with confidence, evidence and source, the history of each fact, and the
+LLM-ready context block. Pressing Debrief on the same task again resumes the same session (idempotency); tick
+"Start a fresh session" for a new one. The pasted key is a demo shortcut: a real admin panel calls `POST /v1/sessions`
+from its server and only gives the browser the `chat_url`.
+
+To embed the chat yourself: create a session, then `<iframe src="{chat_url}">`. Set `FRAME_ANCESTORS` to your panel's
+origin. When the agent saves, the chat posts `{type: "profile-builder:saved", session_id, saved, discarded}` to the
+parent page.
+
+Build and test the app locally (Node 20+):
+
+```bash
+cd web && npm ci
+npm test                    # component tests with a mocked API
+npm run build:api           # builds and copies into app/static so the API serves it
+npm run dev                 # optional: Vite dev server on :5173, proxies /v1 to :8000
+LIVE_API=http://localhost:8000 LIVE_API_KEY=pk_... npm run test:live   # real chat vs a running server
+```
+The Docker image builds the app in a Node stage, so `docker compose up --build` serves it with no extra steps.
 
 ## The debrief conversation
 

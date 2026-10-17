@@ -37,7 +37,16 @@ Each slice is a small, shippable change. For every slice: goal, decisions (ADRs)
 - **Verify:** `pytest -q` (77 tests, SQLite and Postgres); `python -m scripts.smoke` runs debrief, extraction,
   confirm and profile read. With an LLM configured, check the proposals' evidence quotes and the `dropped` reasons.
 
+## Slice 4: chat UI, mock admin panel, profile viewer (FR-7)
+- **Goal:** the part a reviewer clicks through: an embeddable debrief chat with a review/confirm screen, a mock admin
+  panel that launches it, and a tiny profile viewer.
+- **ADRs:** 0012.
+- **Changed:** `web/` (React + TypeScript + Vite; 36 component tests, optional live E2E test); `app/web.py` (serves the
+  app, `frame-ancestors`); `GET /v1/whoami`; multi-stage `Dockerfile`; `FRAME_ANCESTORS` / `STATIC_DIR` settings;
+  `tests/test_web.py`.
+- **Verify:** `pytest -q` (83 tests); `cd web && npm ci && npm test && npm run build`;
+  `LIVE_API=... LIVE_API_KEY=... npm run test:live` against a running server; open `/admin`, paste a key, press Debrief.
+
 ## Next
-- Chat UI + mock admin panel (embeddable, uses the session token), including the review/confirm screen.
 - Voice: audio upload, transcription job with polling, editable transcript.
 - Worker + jobs table (replace in-process background tasks), `profile.updated` webhook, profile viewer, polish.

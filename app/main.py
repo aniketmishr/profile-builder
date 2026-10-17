@@ -1,4 +1,5 @@
 import time
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from sqlalchemy import text
@@ -7,6 +8,7 @@ from app.api import debug_router, router
 from app.config import get_settings
 from app.db import get_engine
 from app.logging import log, setup_logging
+from app.web import mount_web
 
 settings = get_settings()
 setup_logging(settings.log_level)
@@ -19,6 +21,9 @@ app = FastAPI(
 app.include_router(router)
 if settings.enable_debug_endpoints:
     app.include_router(debug_router)
+
+
+mount_web(app, Path(settings.static_dir or Path(__file__).parent / "static"), settings.frame_ancestors)
 
 
 @app.middleware("http")

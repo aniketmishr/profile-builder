@@ -26,6 +26,9 @@ Reasoning for every major choice is in `docs/decisions/` (ADRs). Progress is in 
 12. **Nothing the model says reaches the profile unchecked.** Extracted facts need an evidence quote verified against
     the agent's answers (`extraction.sanitize`) and the agent's confirmation; saving goes through `apply_facts` in one
     transaction with the extraction status. Never write LLM output straight into `profile_facts`. (ADR 0010, 0011)
+13. **The chat holds only the session token.** Never put the tenant API key, or code that needs it, in the chat
+    code path. Keep `web/src/types.ts` in sync with `app/schemas.py`. The chat page must stay embeddable
+    (`frame-ancestors` from config) and must not log or cache the token. (ADR 0012)
 
 ## Workflow for a change
 1. Write or update the ADR first (what, why, alternatives, consequences). Add it to `docs/decisions/README.md`.
@@ -34,4 +37,5 @@ Reasoning for every major choice is in `docs/decisions/` (ADRs). Progress is in 
 
 ## Map
 `app/api.py` routes (thin) → `app/services.py` / `app/planner.py` (rules) → `app/repo.py` (queries) → models.
-`app/debrief.py` conversation state machine, `app/interpreter.py` per-answer interpretation, `app/extraction.py` extraction + confirm, `app/llm/` providers, `app/prompts/` prompt files, `scripts/` seed and smoke, `tests/` unit and isolation tests.
+`app/debrief.py` conversation state machine, `app/interpreter.py` per-answer interpretation, `app/extraction.py` extraction + confirm, `app/llm/` providers, `app/prompts/` prompt files, `app/web.py` serves the built React app from `web/` (chat, mock admin panel, profile viewer), `scripts/` seed and smoke,
+`tests/` backend tests, `web/src/**/*.test.tsx` frontend tests.

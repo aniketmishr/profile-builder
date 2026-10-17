@@ -30,6 +30,12 @@ def _session_out(row: DebriefSession, created: bool) -> SessionOut:
     )
 
 
+@router.get("/whoami", tags=["ops"])
+def whoami(repo: ScopedRepo = Depends(get_repo)):
+    """Which tenant does this API key belong to? (Used by the mock admin panel.)"""
+    return {"tenant_id": repo.tenant_id}
+
+
 # ---- sessions ---------------------------------------------------------------
 @router.post(
     "/sessions", response_model=SessionOut, tags=["sessions"],

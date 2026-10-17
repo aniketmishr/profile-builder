@@ -48,6 +48,8 @@ step("duplicate is idempotent", r2.status_code == 200 and r2.json()["session_id"
 sid = r1.json()["session_id"]
 chat_url = r1.json()["chat_url"]
 print("     chat_url:", chat_url)
+page = httpx.get(chat_url, timeout=60)
+print(f"[{'ok' if page.status_code == 200 else 'warn'}] chat page " + ("served" if page.status_code == 200 else "not served (web app not built here: see README)"))
 
 # --- debrief conversation, driven with the SESSION TOKEN only (what the embedded chat will use) ---
 token = chat_url.split("token=")[1]
