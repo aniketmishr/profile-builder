@@ -14,6 +14,13 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     session_token_ttl_seconds: int = 60 * 60 * 24
 
+    # LLM. "none" means no provider: the planner serves its built-in fallback questions.
+    llm_provider: str = "none"  # none | gemini
+    llm_model: str = ""  # required when llm_provider != none (copy the current model id from the provider)
+    gemini_api_key: str = ""
+    llm_timeout_seconds: float = 8.0
+    max_questions: int = 7
+
     @field_validator("database_url")
     @classmethod
     def _normalize_db_url(cls, v: str) -> str:

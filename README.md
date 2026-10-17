@@ -14,7 +14,9 @@ The AI debrief chat, extraction and voice come on top of this on Days 2 and 3.
 | FR-6 `GET /v1/profiles/{id}`, `/history`, `/context?max_tokens=` (no LLM on read path), API keys, Swagger at `/docs` | done |
 | FR-8 JSON logs with tenant/session ids, `/health` with DB check, seed script | done |
 | Hand-write facts (dev only): `POST /v1/profiles/{id}/facts` | done, gated by `ENABLE_DEBUG_ENDPOINTS` |
-| FR-2/3/4 chat, voice, extraction | not yet (Day 2/3) |
+| LLM interface (Gemini provider) + task-aware question planner with deterministic fallback | done (slice 1) |
+| Dev preview `POST /v1/sessions/{id}/plan-preview` | done, gated by `ENABLE_DEBUG_ENDPOINTS` |
+| FR-2 debrief turns, FR-3 voice, FR-4 extraction + confirm | not yet (next slices) |
 | `/chat/{session_id}` page that `chat_url` points to | not yet (Day 2), the URL is generated and its token is verifiable |
 
 ## Layout
@@ -26,8 +28,12 @@ app/
   services.py   business rules: idempotent intake, apply_facts (conflict rule), context builder
   repo.py       ONLY place that queries tenant data; ScopedRepo is locked to one tenant
   deps.py       X-API-Key -> tenant -> ScopedRepo
+  planner.py    debrief question planning (LLM + fallback)
+  llm/          provider interface, validate-and-repair, Gemini provider
+  prompts/      versioned prompt files (planner_v1.md)
   models.py  schemas.py  security.py  config.py  db.py  logging.py  ids.py
 migrations/     Alembic (0001_init)
+docs/           decisions/ (ADRs), slices.md. Agents: read AGENTS.md first
 scripts/        seed.py, smoke.py
 tests/          sessions, profiles, isolation
 ```
@@ -77,6 +83,10 @@ budget, and tenant isolation through every endpoint. Both backends pass.
 | `PUBLIC_BASE_URL` | base for `chat_url`, e.g. your hosted URL |
 | `ENABLE_DEBUG_ENDPOINTS` | `true` exposes the hand-write facts endpoint |
 | `LOG_LEVEL` | default `INFO` |
+| `LLM_PROVIDER` | `none` (default, fallback questions only) or `gemini` |
+| `LLM_MODEL` | required with a provider: copy the current model id from Google AI Studio |
+| `GEMINI_API_KEY` | key from Google AI Studio |
+| `LLM_TIMEOUT_SECONDS` / `MAX_QUESTIONS` | default `8` / `7` |
 
 No secrets live in the repo. API keys are stored only as SHA-256 hashes.
 
@@ -152,3 +162,17 @@ Status codes: `201` new session, `200` duplicate call, `401` bad key, `403` body
 - Token counting is a character estimate, not a real tokenizer.
 - No rate limiting, key rotation endpoint or webhook yet. Keys are created with `scripts/seed.py`.
 - `chat_url` points to a page that does not exist until Day 2.
+
+## Try the question planner
+
+```bash
+# 1. create a session (see API section), note its session_id
+# 2. preview the plan: without an LLM key this returns source "fallback"
+curl -X POST $BASE/v1/sessions/ss_.../plan-preview -H "X-API-Key: $API_KEY"
+# 3. with LLM_PROVIDER=gemini, LLM_MODEL=<id>, GEMINI_API_KEY=<key> set, source becomes "llm"
+```
+
+## Docs
+
+`AGENTS.md` (rules for contributors and coding agents), `docs/decisions/` (why each major choice was made),
+`docs/slices.md` (what each slice changed and how to verify it).

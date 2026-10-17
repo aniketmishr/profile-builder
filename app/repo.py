@@ -41,6 +41,9 @@ class ScopedRepo:
         self.db.commit()
 
     # ---- agents / end users -------------------------------------------------
+    def get_agent(self, agent_id: str) -> Agent | None:
+        return self.db.execute(self._select(Agent).where(Agent.id == agent_id)).scalar_one_or_none()
+
     def upsert_agent(self, agent_id: str, name: str) -> Agent:
         row = self.db.execute(self._select(Agent).where(Agent.id == agent_id)).scalar_one_or_none()
         if row is None:

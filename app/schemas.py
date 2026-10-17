@@ -147,3 +147,23 @@ class ContextOut(BaseModel):
     context: str
     approx_tokens: int
     truncated: bool
+
+
+# ---- debrief planning (dev preview) -----------------------------------------
+class PlannedQuestionOut(BaseModel):
+    id: str
+    category: Category
+    text: str
+    why: str = ""
+
+
+class PlanPreviewOut(BaseModel):
+    session_id: str
+    source: Literal["llm", "fallback"]
+    provider: str | None
+    model: str | None
+    prompt_version: str
+    latency_ms: float
+    error: str | None = None
+    intro: str
+    questions: list[PlannedQuestionOut]

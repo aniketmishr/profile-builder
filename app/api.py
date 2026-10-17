@@ -3,14 +3,15 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import PlainTextResponse
 
-from app import services
+from app import planner, services
 from app.config import get_settings
 from app.deps import get_repo
+from app.llm import LLMProvider, get_llm
 from app.models import DebriefSession
 from app.repo import ScopedRepo
 from app.schemas import (
-    ContextOut, FactHistory, FactOut, FactsIn, FactsWritten, HistoryOut, ProfileOut,
-    SessionCreate, SessionOut, SessionRef,
+    ContextOut, FactHistory, FactOut, FactsIn, FactsWritten, HistoryOut, PlanPreviewOut,
+    PlannedQuestionOut, ProfileOut, SessionCreate, SessionOut, SessionRef,
 )
 from app.security import make_session_token
 
@@ -113,4 +114,36 @@ def write_facts(end_user_id: str, body: FactsIn, repo: ScopedRepo = Depends(get_
         written=[FactOut.model_validate(f) for f in written],
         unchanged=[FactOut.model_validate(f) for f in unchanged],
         profile_version=version,
+    )
+
+
+@debug_router.post("/sessions/{session_id}/plan-preview", response_model=PlanPreviewOut)
+def plan_preview(
+    session_id: str,
+    repo: ScopedRepo = Depends(get_repo),
+    llm: LLMProvider | None = Depends(get_llm),
+):
+    """Dev only: generate the debrief question plan for a session (one LLM call, nothing is saved).
+
+    Shows which provider/model/prompt version produced it, and whether the fallback was used.
+    """
+    session = repo.get_session(session_id)
+    if session is None:
+        raise HTTPException(404, "session not found")
+    end_user = repo.get_end_user(session.end_user_id)
+    agent = repo.get_agent(session.agent_id)
+    inp = planner.PlanInput(
+        task=session.task_context,
+        end_user_name=end_user.display_name if end_user else "",
+        agent_name=agent.name if agent else "",
+        locale=session.locale,
+        known_facts=[(f.category, f.key, f.value) for f in repo.current_facts(session.end_user_id)],
+    )
+    result = planner.plan_questions(llm, inp)
+    return PlanPreviewOut(
+        session_id=session.id, source=result.source,
+        provider=getattr(llm, "name", None), model=result.model,
+        prompt_version=result.prompt_version, latency_ms=result.latency_ms, error=result.error,
+        intro=planner.intro_text(inp, len(result.questions)),
+        questions=[PlannedQuestionOut(**q.model_dump()) for q in result.questions],
     )
