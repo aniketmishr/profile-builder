@@ -17,7 +17,8 @@ The AI debrief chat, extraction and voice come on top of this on Days 2 and 3.
 | LLM interface (Gemini provider) + task-aware question planner with deterministic fallback | done (slice 1) |
 | Dev preview `POST /v1/sessions/{id}/plan-preview` | done, gated by `ENABLE_DEBUG_ENDPOINTS` |
 | FR-2 debrief conversation API: persisted turns, skip/end, adaptive follow-ups, 7-question cap, session-token auth | done (slice 2) |
-| FR-4 extraction + confirm step, chat UI, mock admin panel, FR-3 voice | not yet (next slices) |
+| FR-4 structured extraction (schema-valid, evidence-verified) + confirm/edit/discard, saved via one transaction | done (slice 3) |
+| Chat UI, mock admin panel, FR-3 voice, worker/webhook/viewer | not yet (next slices) |
 | `/chat/{session_id}` page that `chat_url` points to | not yet (Day 2), the URL is generated and its token is verifiable |
 
 ## Layout
@@ -31,6 +32,7 @@ app/
   deps.py       X-API-Key -> tenant -> ScopedRepo
   planner.py    debrief question planning (LLM + fallback)
   debrief.py    conversation state machine (turns, limits)   interpreter.py  per-answer interpretation
+  extraction.py debrief -> proposed facts -> confirm (validation, fallback, persisted run)
   llm/          provider interface, validate-and-repair, Gemini provider
   prompts/      versioned prompt files (planner_v1.md)
   models.py  schemas.py  security.py  config.py  db.py  logging.py  ids.py
@@ -89,6 +91,8 @@ budget, and tenant isolation through every endpoint. Both backends pass.
 | `LLM_MODEL` | required with a provider: copy the current model id from Google AI Studio |
 | `GEMINI_API_KEY` | key from Google AI Studio |
 | `LLM_TIMEOUT_SECONDS` / `LLM_TURN_TIMEOUT_SECONDS` / `MAX_QUESTIONS` | default `8` / `4` / `7` |
+| `AUTO_EXTRACT` | default `true`: start extraction in the background when a debrief completes |
+| `EXTRACTION_TIMEOUT_SECONDS` / `MAX_EXTRACTED_FACTS` / `EXTRACTION_STALE_SECONDS` | default `20` / `20` / `120` |
 | `PRECOMPUTE_PLANS` | default `true`: build the question plan in the background at intake |
 
 No secrets live in the repo. API keys are stored only as SHA-256 hashes.
@@ -181,6 +185,22 @@ state (`state`: not_started | active | complete, `current_question_id`, `progres
 `409` means the debrief is complete or not started, or `question_id` is stale (a double-submit).
 Without an LLM it runs on the fallback questions with no adaptivity; with one, answers can trigger a
 follow-up or skip questions the agent already covered.
+
+## Extraction and confirm
+
+```bash
+# when the debrief completes, extraction starts by itself; poll until status is "ready"
+curl $BASE/v1/sessions/$SID/extraction -H "X-Session-Token: $TOKEN"
+#   -> facts: [{id, category, key, value, confidence, evidence, status: "proposed"}], source: llm | fallback | none
+# save: facts you don't list are kept; edit or discard explicitly
+curl -X POST $BASE/v1/sessions/$SID/extraction/confirm -H "X-Session-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"decisions":[{"fact_id":"xf_...","action":"edit","value":"21:30 local"},{"fact_id":"xf_...","action":"discard"}]}'
+curl -X POST $BASE/v1/sessions/$SID/extraction -H "X-Session-Token: $TOKEN"   # retry/re-run (until confirmed)
+```
+Every proposed fact carries an evidence quote that is verified to appear in the agent's answers; anything that fails
+(or has low confidence, a bad key, a duplicate) is dropped and recorded. With no LLM, or if it fails, the agent's own
+answers are offered as `notes` so nothing is lost. Nothing reaches the profile until confirmed; saved facts record the
+prompt version, model and whether the agent edited them in `provenance`.
 
 ## Try the question planner
 

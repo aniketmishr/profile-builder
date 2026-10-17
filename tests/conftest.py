@@ -10,6 +10,7 @@ os.environ["ENABLE_DEBUG_ENDPOINTS"] = "true"
 os.environ["PUBLIC_BASE_URL"] = "http://testserver"
 os.environ["PRECOMPUTE_PLANS"] = "false"  # tests opt in explicitly
 os.environ["LLM_PROVIDER"] = "none"
+os.environ["AUTO_EXTRACT"] = "false"  # tests opt in explicitly
 
 import pytest
 from fastapi.testclient import TestClient

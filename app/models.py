@@ -160,3 +160,51 @@ class DebriefMessage(Base):
         UniqueConstraint("tenant_id", "session_id", "seq", name="uq_debrief_message_seq"),
         ForeignKeyConstraint(["tenant_id", "session_id"], ["debriefs.tenant_id", "debriefs.session_id"]),
     )
+
+
+class Extraction(Base):
+    """One per session. status: running | ready | confirmed | failed.
+    llm_input/llm_output/dropped keep the exact prompt, the model's answer and what validation rejected,
+    so 'why was this fact proposed' can always be answered."""
+    __tablename__ = "extractions"
+    tenant_id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String, primary_key=True)
+    status: Mapped[str] = mapped_column(String, default="running")
+    attempt: Mapped[int] = mapped_column(Integer, default=1)
+    source: Mapped[str | None] = mapped_column(String, nullable=True)  # llm | fallback | none
+    prompt_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    model: Mapped[str | None] = mapped_column(String, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    llm_input: Mapped[str | None] = mapped_column(Text, nullable=True)
+    llm_output: Mapped[dict | None] = mapped_column(JsonType, nullable=True)
+    dropped: Mapped[list | None] = mapped_column(JsonType, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(["tenant_id", "session_id"], ["debriefs.tenant_id", "debriefs.session_id"]),
+    )
+
+
+class ExtractedFact(Base):
+    """A proposed fact awaiting the agent's decision. status: proposed | saved | discarded."""
+    __tablename__ = "extracted_facts"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String)
+    session_id: Mapped[str] = mapped_column(String)
+    category: Mapped[str] = mapped_column(String)
+    key: Mapped[str] = mapped_column(String)
+    value: Mapped[object] = mapped_column(JsonType)
+    confidence: Mapped[float] = mapped_column(Float)
+    evidence: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String, default="proposed")
+    edited: Mapped[bool] = mapped_column(Boolean, default=False)
+    original_value: Mapped[object | None] = mapped_column(JsonType, nullable=True)
+    saved_fact_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        ForeignKeyConstraint(["tenant_id", "session_id"], ["extractions.tenant_id", "extractions.session_id"]),
+        Index("ix_extracted_facts_session", "tenant_id", "session_id"),
+    )

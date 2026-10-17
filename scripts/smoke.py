@@ -6,6 +6,7 @@ Needs ENABLE_DEBUG_ENDPOINTS=true on the server (it writes facts by hand).
 """
 import os
 import sys
+import time
 import uuid
 
 import httpx
@@ -67,6 +68,25 @@ while st["state"] == "active" and turns < 12:
     turns += 1
 step("debrief completes", st["state"] == "complete", f"end_reason={st['end_reason']} asked={st['progress']['asked']}")
 step("session token cannot read profiles", chat.get(f"/v1/profiles/{USER}").status_code == 401)
+
+# --- extraction runs by itself when the debrief completes; the agent reviews and confirms ---
+ex = None
+for _ in range(45):  # poll: it runs in the background and an LLM call can take a few seconds
+    r = chat.get(f"/v1/sessions/{sid}/extraction")
+    if r.status_code == 200 and r.json()["status"] in ("ready", "failed"):
+        ex = r.json()
+        break
+    time.sleep(1)
+step("extraction ready", ex is not None and ex["status"] == "ready",
+     f"source={ex and ex['source']} proposed={ex and len(ex['facts'])} dropped={ex and ex['dropped_count']}" + (f" error={ex['error']}" if ex and ex["error"] else ""))
+for f in ex["facts"]:
+    print(f"     proposed {f['category']}.{f['key']} = {f['value']}  [{f['confidence']}]  evidence: \"{f['evidence']}\"")
+r = chat.post(f"/v1/sessions/{sid}/extraction/confirm", json={})
+step("confirm saves the facts", r.status_code == 200 and len(r.json()["saved"]) >= 1, f"saved={len(r.json().get('saved', []))}")
+prof = c.get(f"/v1/profiles/{USER}").json()
+step("confirmed facts are in the profile with provenance",
+     any(f["provenance"] and f["provenance"].get("origin") == "extraction" for f in prof["facts"]))
+step("confirming twice is refused", chat.post(f"/v1/sessions/{sid}/extraction/confirm", json={}).status_code == 409)
 
 facts = [
     {"category": "contact_preferences", "key": "preferred_channel", "value": "whatsapp", "confidence": 0.95, "evidence": "only whatsapp"},

@@ -12,7 +12,8 @@ from sqlalchemy.orm import Session
 
 from app.ids import new_id
 from app.models import (
-    Agent, ApiKey, Debrief, DebriefMessage, DebriefQuestion, DebriefSession, EndUser, ProfileFact,
+    Agent, ApiKey, Debrief, DebriefMessage, DebriefQuestion, DebriefSession, EndUser, ExtractedFact,
+    Extraction, ProfileFact,
 )
 from app.security import keys_match, parse_prefix
 
@@ -177,3 +178,33 @@ class ScopedRepo:
         self.db.add(row)
         self.db.flush()
         return row
+
+    # ---- extraction ---------------------------------------------------------
+    def get_extraction(self, session_id: str, lock: bool = False) -> Extraction | None:
+        q = self._select(Extraction).where(Extraction.session_id == session_id)
+        if lock:
+            q = q.with_for_update()
+        return self.db.execute(q).scalar_one_or_none()
+
+    def create_extraction(self, session_id: str) -> Extraction:
+        """Claims the single extraction slot for a session. Raises IntegrityError if it already exists."""
+        row = Extraction(tenant_id=self.tenant_id, session_id=session_id, status="running", attempt=1)
+        with self.db.begin_nested():
+            self.db.add(row)
+        return row
+
+    def extracted_facts(self, session_id: str) -> list[ExtractedFact]:
+        q = self._select(ExtractedFact).where(ExtractedFact.session_id == session_id).order_by(
+            ExtractedFact.created_at, ExtractedFact.id)
+        return list(self.db.execute(q).scalars())
+
+    def add_extracted_fact(self, session_id: str, **fields) -> ExtractedFact:
+        row = ExtractedFact(id=new_id("xf"), tenant_id=self.tenant_id, session_id=session_id, **fields)
+        self.db.add(row)
+        self.db.flush()
+        return row
+
+    def delete_extracted_facts(self, session_id: str) -> None:
+        for row in self.extracted_facts(session_id):
+            self.db.delete(row)
+        self.db.flush()

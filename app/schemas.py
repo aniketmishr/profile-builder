@@ -216,3 +216,56 @@ class DebriefStateOut(BaseModel):
     progress: DebriefProgress
     questions: list[DebriefQuestionOut]
     messages: list[DebriefMessageOut]
+
+
+# ---- extraction and confirmation --------------------------------------------
+FactValue = str | list[str]
+
+
+class ExtractedFactOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    category: str
+    key: str
+    value: Any
+    confidence: float
+    evidence: str
+    status: Literal["proposed", "saved", "discarded"]
+    edited: bool = False
+
+
+class ExtractionOut(BaseModel):
+    session_id: str
+    status: Literal["running", "ready", "confirmed", "failed"]
+    source: str | None = None  # llm | fallback | none
+    prompt_version: str | None = None
+    model: str | None = None
+    error: str | None = None
+    attempt: int
+    dropped_count: int = 0
+    facts: list[ExtractedFactOut]
+
+
+class DecisionIn(BaseModel):
+    fact_id: str
+    action: Literal["keep", "edit", "discard"]
+    value: FactValue | None = Field(default=None, description="new value; required for action 'edit'")
+
+
+class ConfirmIn(BaseModel):
+    decisions: list[DecisionIn] = Field(
+        default_factory=list, max_length=50,
+        description="Facts not listed are kept. Send {} to save everything as proposed.",
+    )
+
+    model_config = ConfigDict(json_schema_extra={"example": {"decisions": [
+        {"fact_id": "xf_replace", "action": "edit", "value": "21:30 local"},
+        {"fact_id": "xf_replace_2", "action": "discard"},
+    ]}})
+
+
+class ConfirmOut(BaseModel):
+    saved: list[FactOut]
+    unchanged: list[FactOut]
+    discarded: int
+    profile_version: int

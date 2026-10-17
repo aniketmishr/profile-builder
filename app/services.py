@@ -65,6 +65,8 @@ def apply_facts(
     source_session_id: str,
     facts: list[FactIn],
     provenance: dict,
+    fact_provenance: dict[tuple[str, str], dict] | None = None,
+    commit: bool = True,
 ) -> tuple[list[ProfileFact], list[ProfileFact], int]:
     """The ONE write path for facts (manual today, LLM extraction later).
 
@@ -101,13 +103,17 @@ def apply_facts(
         written.append(repo.add_fact(
             id=new_id_, end_user_id=end_user_id, source_session_id=source_session_id,
             category=category, key=key, value=f.value, confidence=f.confidence,
-            evidence=f.evidence, is_current=True, provenance=provenance,
+            evidence=f.evidence, is_current=True,
+            provenance={**provenance, **(fact_provenance or {}).get((category, key), {})},
         ))
         log("fact saved", category=category, key=key, superseded=current is not None)
 
     if written:
         repo.touch_profile(end_user)
-    repo.commit()
+    if commit:
+        repo.commit()
+    else:
+        repo.db.flush()
     return written, unchanged, end_user.profile_version
 
 

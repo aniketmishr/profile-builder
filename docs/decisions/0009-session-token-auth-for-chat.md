@@ -15,3 +15,7 @@ no benefit at this size). Cookies (cross-site iframe problems).
 
 **Consequences.** Any new endpoint the chat UI needs must use `get_debrief_repo` and verify the session id.
 Tokens are bearer credentials valid for the TTL; revocation is not implemented. The profile viewer will need its own scheme.
+
+**Addendum (slice 3).** The token also reaches `GET/POST .../extraction` and `POST .../extraction/confirm` for its own
+session, because the chat shows the summary and saves the agent's decisions. Through those it can write facts only for
+that session's end user, only after the agent confirms, and only once. It still cannot read profiles or any other session.

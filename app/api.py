@@ -3,14 +3,14 @@ from typing import Literal
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from fastapi.responses import PlainTextResponse
 
-from app import debrief, planner, services
+from app import debrief, extraction, planner, services
 from app.config import get_settings
 from app.deps import get_debrief_repo, get_repo
 from app.llm import LLMProvider, get_llm
 from app.models import DebriefSession
 from app.repo import ScopedRepo
 from app.schemas import (
-    AnswerIn, ContextOut, DebriefStateOut, FactHistory, FactOut, FactsIn, FactsWritten, HistoryOut, PlanPreviewOut,
+    AnswerIn, ConfirmIn, ConfirmOut, ContextOut, DebriefStateOut, ExtractionOut, FactHistory, FactOut, FactsIn, FactsWritten, HistoryOut, PlanPreviewOut,
     PlannedQuestionOut, ProfileOut, SessionCreate, SessionOut, SessionRef,
 )
 from app.security import make_session_token
@@ -81,12 +81,51 @@ def get_debrief(session_id: str, repo: ScopedRepo = Depends(get_debrief_repo)):
     responses={409: {"description": "Debrief complete, not started, or `question_id` is not the current question"}},
 )
 def answer_debrief(
-    session_id: str, body: AnswerIn,
+    session_id: str, body: AnswerIn, background: BackgroundTasks,
     repo: ScopedRepo = Depends(get_debrief_repo),
     llm: LLMProvider | None = Depends(get_llm),
 ):
-    """Answer, skip, or end the debrief. Returns the updated state including the AI's next message."""
-    return debrief.submit(repo, llm, session_id, body)
+    """Answer, skip, or end the debrief. Returns the updated state including the AI's next message.
+    When the debrief completes, extraction starts in the background (poll `GET .../extraction`)."""
+    state = debrief.submit(repo, llm, session_id, body)
+    if state.state == "complete" and get_settings().auto_extract:
+        _, should_run = extraction.request(repo, session_id, force=False)
+        if should_run:
+            background.add_task(extraction.run_extraction, repo.tenant_id, session_id, llm)
+    return state
+
+
+# ---- extraction + confirm (API key OR session token) -------------------------------------
+@router.post(
+    "/sessions/{session_id}/extraction", response_model=ExtractionOut, status_code=202, tags=["extraction"],
+    responses={409: {"description": "Debrief not complete, or facts already confirmed"}},
+)
+def start_extraction(
+    session_id: str, background: BackgroundTasks,
+    repo: ScopedRepo = Depends(get_debrief_repo),
+    llm: LLMProvider | None = Depends(get_llm),
+):
+    """(Re)run extraction for a completed debrief, e.g. a retry. It normally starts by itself when the debrief
+    completes. Does nothing if a run is already in progress; refused once the facts are confirmed."""
+    _, should_run = extraction.request(repo, session_id, force=True)
+    if should_run:
+        background.add_task(extraction.run_extraction, repo.tenant_id, session_id, llm)
+    return extraction.get_out(repo, session_id)
+
+
+@router.get("/sessions/{session_id}/extraction", response_model=ExtractionOut, tags=["extraction"])
+def get_extraction(session_id: str, repo: ScopedRepo = Depends(get_debrief_repo)):
+    """Proposed facts with their evidence quotes. Poll while `status` is `running`."""
+    return extraction.get_out(repo, session_id)
+
+
+@router.post(
+    "/sessions/{session_id}/extraction/confirm", response_model=ConfirmOut, tags=["extraction"],
+    responses={409: {"description": "Not ready yet, or already confirmed"}, 422: {"description": "Bad decision"}},
+)
+def confirm_extraction(session_id: str, body: ConfirmIn, repo: ScopedRepo = Depends(get_debrief_repo)):
+    """Save the facts into the profile. Facts you don't list are kept; use `discard` or `edit` to change them."""
+    return extraction.confirm(repo, session_id, body)
 
 
 # ---- profiles ---------------------------------------------------------------

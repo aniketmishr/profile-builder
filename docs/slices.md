@@ -26,6 +26,18 @@ Each slice is a small, shippable change. For every slice: goal, decisions (ADRs)
 - **Verify:** `pytest -q` (56 tests, SQLite and Postgres); `python -m scripts.smoke` walks a full debrief using
   only the session token. With an LLM configured, check follow-ups and covered questions in the transcript.
 
+## Slice 3: structured extraction and the confirm step (FR-4)
+- **Goal:** turn a finished debrief into schema-valid, evidence-backed facts, let the agent confirm/edit/discard,
+  and save them through the single write path.
+- **ADRs:** 0010, 0011 (and an addendum to 0009).
+- **Changed:** tables `extractions`, `extracted_facts` (migration 0003); `app/extraction.py`,
+  `app/prompts/extractor_v1.md`; endpoints `POST/GET /v1/sessions/{id}/extraction` and
+  `POST /v1/sessions/{id}/extraction/confirm`; `apply_facts` gained per-fact provenance and `commit=False`;
+  auto-start on debrief completion; `tests/test_extraction.py` (21 tests).
+- **Verify:** `pytest -q` (77 tests, SQLite and Postgres); `python -m scripts.smoke` runs debrief, extraction,
+  confirm and profile read. With an LLM configured, check the proposals' evidence quotes and the `dropped` reasons.
+
 ## Next
-- Slice 3: extraction from the finished debrief, the confirm/edit/discard summary, saving through `apply_facts`.
-- Then: chat UI + mock admin panel (embeddable), then voice transcription job, then the worker and polish.
+- Chat UI + mock admin panel (embeddable, uses the session token), including the review/confirm screen.
+- Voice: audio upload, transcription job with polling, editable transcript.
+- Worker + jobs table (replace in-process background tasks), `profile.updated` webhook, profile viewer, polish.

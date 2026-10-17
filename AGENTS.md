@@ -23,6 +23,9 @@ Reasoning for every major choice is in `docs/decisions/` (ADRs). Progress is in 
     checks live in `app/debrief.py`. The LLM only advises (`interpreter`) and every output is validated. (ADR 0008)
 11. **Chat endpoints** must use `deps.get_debrief_repo` (API key or session token bound to one session). Do not
     hand a session token access to profile or tenant-wide endpoints. (ADR 0009)
+12. **Nothing the model says reaches the profile unchecked.** Extracted facts need an evidence quote verified against
+    the agent's answers (`extraction.sanitize`) and the agent's confirmation; saving goes through `apply_facts` in one
+    transaction with the extraction status. Never write LLM output straight into `profile_facts`. (ADR 0010, 0011)
 
 ## Workflow for a change
 1. Write or update the ADR first (what, why, alternatives, consequences). Add it to `docs/decisions/README.md`.
@@ -31,4 +34,4 @@ Reasoning for every major choice is in `docs/decisions/` (ADRs). Progress is in 
 
 ## Map
 `app/api.py` routes (thin) → `app/services.py` / `app/planner.py` (rules) → `app/repo.py` (queries) → models.
-`app/debrief.py` conversation state machine, `app/interpreter.py` per-answer interpretation, `app/llm/` providers, `app/prompts/` prompt files, `scripts/` seed and smoke, `tests/` unit and isolation tests.
+`app/debrief.py` conversation state machine, `app/interpreter.py` per-answer interpretation, `app/extraction.py` extraction + confirm, `app/llm/` providers, `app/prompts/` prompt files, `scripts/` seed and smoke, `tests/` unit and isolation tests.

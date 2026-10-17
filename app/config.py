@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     llm_timeout_seconds: float = 8.0  # planning
     llm_turn_timeout_seconds: float = 4.0  # per-answer interpretation (keeps turns snappy)
+    extraction_timeout_seconds: float = 20.0
+    max_extracted_facts: int = 20
+    auto_extract: bool = True  # start extraction in the background as soon as a debrief completes
+    extraction_stale_seconds: int = 120  # a 'running' extraction older than this may be re-run
     precompute_plans: bool = True  # generate the question plan in the background at session intake
     max_questions: int = 7
 
