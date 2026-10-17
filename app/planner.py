@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from app.config import get_settings
 from app.llm import LLMError, LLMProvider, generate_structured
 from app.logging import log
-from app.prompts import load_prompt
+from app.prompts import clean as _clean, load_prompt
 from app.schemas import Category
 
 PROMPT_NAME = "planner_v1"
@@ -64,10 +64,6 @@ class PlanResult:
 def build_system_prompt() -> str:
     schema = json.dumps(LLMPlan.model_json_schema(), separators=(",", ":"))
     return load_prompt(PROMPT_NAME).replace("{schema}", schema)
-
-
-def _clean(text: object) -> str:
-    return str(text or "").replace("</", "<\\/").strip()
 
 
 def build_user_prompt(inp: PlanInput) -> str:

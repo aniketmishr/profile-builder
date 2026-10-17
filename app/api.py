@@ -1,16 +1,16 @@
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from fastapi.responses import PlainTextResponse
 
-from app import planner, services
+from app import debrief, planner, services
 from app.config import get_settings
-from app.deps import get_repo
+from app.deps import get_debrief_repo, get_repo
 from app.llm import LLMProvider, get_llm
 from app.models import DebriefSession
 from app.repo import ScopedRepo
 from app.schemas import (
-    ContextOut, FactHistory, FactOut, FactsIn, FactsWritten, HistoryOut, PlanPreviewOut,
+    AnswerIn, ContextOut, DebriefStateOut, FactHistory, FactOut, FactsIn, FactsWritten, HistoryOut, PlanPreviewOut,
     PlannedQuestionOut, ProfileOut, SessionCreate, SessionOut, SessionRef,
 )
 from app.security import make_session_token
@@ -38,10 +38,16 @@ def _session_out(row: DebriefSession, created: bool) -> SessionOut:
                403: {"description": "tenant_id in body differs from the API key's tenant"},
                409: {"description": "idempotency_key reused for a different task or end user"}},
 )
-def create_session(payload: SessionCreate, response: Response, repo: ScopedRepo = Depends(get_repo)):
+def create_session(
+    payload: SessionCreate, response: Response, background: BackgroundTasks,
+    repo: ScopedRepo = Depends(get_repo), llm: LLMProvider | None = Depends(get_llm),
+):
     """Called by the admin panel when a task closes. Idempotent on `idempotency_key`."""
     row, created = services.create_session(repo, payload)
     response.status_code = 201 if created else 200
+    if created and get_settings().precompute_plans:
+        # Best effort: have the question plan ready before the agent opens the chat.
+        background.add_task(debrief.precompute_plan, repo.tenant_id, row.id, llm)
     return _session_out(row, created)
 
 
@@ -51,6 +57,36 @@ def get_session(session_id: str, repo: ScopedRepo = Depends(get_repo)):
     if row is None:
         raise HTTPException(404, "session not found")
     return _session_out(row, False)
+
+
+# ---- debrief conversation (API key OR session token) ------------------------
+@router.post("/sessions/{session_id}/debrief/start", response_model=DebriefStateOut, tags=["debrief"])
+def start_debrief(
+    session_id: str,
+    repo: ScopedRepo = Depends(get_debrief_repo),
+    llm: LLMProvider | None = Depends(get_llm),
+):
+    """Open the debrief: creates the plan if needed and posts the intro and first question. Idempotent."""
+    return debrief.start(repo, session_id, llm)
+
+
+@router.get("/sessions/{session_id}/debrief", response_model=DebriefStateOut, tags=["debrief"])
+def get_debrief(session_id: str, repo: ScopedRepo = Depends(get_debrief_repo)):
+    """Current conversation state: messages, question statuses, progress. Safe to poll or reload."""
+    return debrief.get_state(repo, session_id)
+
+
+@router.post(
+    "/sessions/{session_id}/debrief/answer", response_model=DebriefStateOut, tags=["debrief"],
+    responses={409: {"description": "Debrief complete, not started, or `question_id` is not the current question"}},
+)
+def answer_debrief(
+    session_id: str, body: AnswerIn,
+    repo: ScopedRepo = Depends(get_debrief_repo),
+    llm: LLMProvider | None = Depends(get_llm),
+):
+    """Answer, skip, or end the debrief. Returns the updated state including the AI's next message."""
+    return debrief.submit(repo, llm, session_id, body)
 
 
 # ---- profiles ---------------------------------------------------------------

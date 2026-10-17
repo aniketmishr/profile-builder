@@ -19,7 +19,7 @@ class Scripted:
         self.responses = list(responses)
         self.calls: list[tuple[str, str]] = []
 
-    def complete_json(self, *, system, user):
+    def complete_json(self, *, system, user, timeout=None):
         self.calls.append((system, user))
         r = self.responses.pop(0)
         if isinstance(r, Exception):

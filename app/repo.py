@@ -10,7 +10,10 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import Agent, ApiKey, DebriefSession, EndUser, ProfileFact
+from app.ids import new_id
+from app.models import (
+    Agent, ApiKey, Debrief, DebriefMessage, DebriefQuestion, DebriefSession, EndUser, ProfileFact,
+)
 from app.security import keys_match, parse_prefix
 
 
@@ -135,3 +138,42 @@ class ScopedRepo:
     def touch_profile(self, end_user: EndUser) -> None:
         end_user.profile_version = (end_user.profile_version or 0) + 1
         end_user.updated_at = _now()
+
+    # ---- debrief ------------------------------------------------------------
+    def get_debrief(self, session_id: str, lock: bool = False) -> Debrief | None:
+        q = self._select(Debrief).where(Debrief.session_id == session_id)
+        if lock:
+            q = q.with_for_update()  # serialises turns for one session (no-op on SQLite)
+        return self.db.execute(q).scalar_one_or_none()
+
+    def create_debrief(self, session_id: str, meta: dict, questions: list[dict]) -> Debrief:
+        """Plan + questions in one savepoint. Raises IntegrityError if the debrief already exists."""
+        with self.db.begin_nested():
+            debrief = Debrief(tenant_id=self.tenant_id, session_id=session_id, state="active", **meta)
+            self.db.add(debrief)
+            for i, q in enumerate(questions, start=1):
+                self.db.add(DebriefQuestion(
+                    id=new_id("dq"), tenant_id=self.tenant_id, session_id=session_id,
+                    seq=i, kind="planned", status="pending", **q,
+                ))
+        return debrief
+
+    def debrief_questions(self, session_id: str) -> list[DebriefQuestion]:
+        q = self._select(DebriefQuestion).where(DebriefQuestion.session_id == session_id).order_by(DebriefQuestion.seq)
+        return list(self.db.execute(q).scalars())
+
+    def debrief_messages(self, session_id: str) -> list[DebriefMessage]:
+        q = self._select(DebriefMessage).where(DebriefMessage.session_id == session_id).order_by(DebriefMessage.seq)
+        return list(self.db.execute(q).scalars())
+
+    def add_debrief_question(self, session_id: str, **fields) -> DebriefQuestion:
+        row = DebriefQuestion(id=new_id("dq"), tenant_id=self.tenant_id, session_id=session_id, **fields)
+        self.db.add(row)
+        self.db.flush()
+        return row
+
+    def add_debrief_message(self, session_id: str, **fields) -> DebriefMessage:
+        row = DebriefMessage(id=new_id("dm"), tenant_id=self.tenant_id, session_id=session_id, **fields)
+        self.db.add(row)
+        self.db.flush()
+        return row

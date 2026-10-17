@@ -13,3 +13,5 @@ changes, add a new ADR and mark the old one `Superseded by NNNN`.
 | [0005](0005-sync-sqlalchemy-and-databases.md) | Sync SQLAlchemy; Postgres is the target, SQLite for dev/tests | 0 |
 | [0006](0006-llm-provider-layer.md) | Provider-agnostic LLM layer with validate-and-repair | 1 |
 | [0007](0007-question-planner.md) | Question planner: fallback, caps in code, untrusted input | 1 |
+| [0008](0008-debrief-state-machine.md) | Debrief conversation: persisted state machine with hard limits | 2 |
+| [0009](0009-session-token-auth-for-chat.md) | Session token for the embedded chat endpoints | 2 |

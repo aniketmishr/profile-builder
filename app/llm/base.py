@@ -21,7 +21,7 @@ class LLMProvider(Protocol):
     name: str
     model: str
 
-    def complete_json(self, *, system: str, user: str) -> str: ...
+    def complete_json(self, *, system: str, user: str, timeout: float | None = None) -> str: ...
 
 
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
@@ -38,13 +38,14 @@ def _short_errors(err: ValidationError | json.JSONDecodeError) -> str:
 
 
 def generate_structured(
-    provider: LLMProvider, *, system: str, user: str, schema: type[T], max_repairs: int = 1
+    provider: LLMProvider, *, system: str, user: str, schema: type[T], max_repairs: int = 1,
+    timeout: float | None = None,
 ) -> T:
     """Ask for JSON, validate it, and on failure ask once more showing the validation errors."""
     prompt = user
     last = "no attempt made"
     for _ in range(max_repairs + 1):
-        raw = provider.complete_json(system=system, user=prompt)
+        raw = provider.complete_json(system=system, user=prompt, timeout=timeout)
         try:
             return schema.model_validate_json(_strip_fences(raw))
         except (ValidationError, json.JSONDecodeError) as e:

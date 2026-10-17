@@ -99,3 +99,64 @@ class ProfileFact(Base):
         ),
         Index("ix_facts_user", "tenant_id", "end_user_id"),
     )
+
+
+class Debrief(Base):
+    """One per session: the persisted plan metadata and conversation state."""
+    __tablename__ = "debriefs"
+    tenant_id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String, primary_key=True)
+    state: Mapped[str] = mapped_column(String, default="active")  # active | complete
+    end_reason: Mapped[str | None] = mapped_column(String, nullable=True)  # all_answered | question_cap | agent_ended
+    plan_source: Mapped[str] = mapped_column(String)  # llm | fallback
+    prompt_version: Mapped[str] = mapped_column(String)
+    model: Mapped[str | None] = mapped_column(String, nullable=True)
+    plan_latency_ms: Mapped[float] = mapped_column(Float, default=0)
+    plan_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(["tenant_id", "session_id"], ["sessions.tenant_id", "sessions.id"]),
+    )
+
+
+class DebriefQuestion(Base):
+    """status: pending | asked | answered | skipped | covered (answered by an earlier answer) | dropped (cap/ended)."""
+    __tablename__ = "debrief_questions"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String)
+    session_id: Mapped[str] = mapped_column(String)
+    seq: Mapped[int] = mapped_column(Integer)
+    category: Mapped[str] = mapped_column(String)
+    text: Mapped[str] = mapped_column(Text)
+    why: Mapped[str] = mapped_column(Text, default="")
+    kind: Mapped[str] = mapped_column(String, default="planned")  # planned | follow_up
+    parent_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "session_id", "seq", name="uq_debrief_question_seq"),
+        ForeignKeyConstraint(["tenant_id", "session_id"], ["debriefs.tenant_id", "debriefs.session_id"]),
+    )
+
+
+class DebriefMessage(Base):
+    """The transcript. meta holds why the AI did what it did (interpretation, prompt version, model)."""
+    __tablename__ = "debrief_messages"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String)
+    session_id: Mapped[str] = mapped_column(String)
+    seq: Mapped[int] = mapped_column(Integer)
+    role: Mapped[str] = mapped_column(String)  # ai | agent
+    text: Mapped[str] = mapped_column(Text, default="")
+    question_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    action: Mapped[str | None] = mapped_column(String, nullable=True)  # answer | skip | end (agent messages)
+    meta: Mapped[dict | None] = mapped_column(JsonType, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "session_id", "seq", name="uq_debrief_message_seq"),
+        ForeignKeyConstraint(["tenant_id", "session_id"], ["debriefs.tenant_id", "debriefs.session_id"]),
+    )

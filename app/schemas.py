@@ -167,3 +167,52 @@ class PlanPreviewOut(BaseModel):
     error: str | None = None
     intro: str
     questions: list[PlannedQuestionOut]
+
+
+# ---- debrief conversation ---------------------------------------------------
+class AnswerIn(BaseModel):
+    question_id: str = Field(description="id of the question being answered (the current one)")
+    action: Literal["answer", "skip", "end"] = "answer"
+    text: str | None = Field(default=None, max_length=2000)
+
+    model_config = ConfigDict(json_schema_extra={"example": {
+        "question_id": "dq_replace_with_current_question_id", "action": "answer",
+        "text": "he said never email him, only whatsapp, and not after 9pm",
+    }})
+
+
+class DebriefMessageOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    seq: int
+    role: Literal["ai", "agent"]
+    text: str
+    question_id: str | None
+    action: str | None
+    created_at: datetime | None
+
+
+class DebriefQuestionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    seq: int
+    category: str
+    text: str
+    kind: str
+    status: str
+
+
+class DebriefProgress(BaseModel):
+    asked: int
+    cap: int
+
+
+class DebriefStateOut(BaseModel):
+    session_id: str
+    state: Literal["not_started", "active", "complete"]
+    end_reason: str | None = None
+    plan_source: str | None = None
+    current_question_id: str | None = None
+    progress: DebriefProgress
+    questions: list[DebriefQuestionOut]
+    messages: list[DebriefMessageOut]

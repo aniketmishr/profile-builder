@@ -45,7 +45,28 @@ step("create session", r1.status_code == 201, r1.json().get("session_id", r1.tex
 r2 = c.post("/v1/sessions", json=body)
 step("duplicate is idempotent", r2.status_code == 200 and r2.json()["session_id"] == r1.json()["session_id"])
 sid = r1.json()["session_id"]
-print("     chat_url:", r1.json()["chat_url"])
+chat_url = r1.json()["chat_url"]
+print("     chat_url:", chat_url)
+
+# --- debrief conversation, driven with the SESSION TOKEN only (what the embedded chat will use) ---
+token = chat_url.split("token=")[1]
+chat = httpx.Client(base_url=BASE, headers={"X-Session-Token": token}, timeout=60)
+st = chat.post(f"/v1/sessions/{sid}/debrief/start").json()
+step("debrief start (session token)", st["state"] == "active" and len(st["messages"]) == 2, "plan_source=" + str(st["plan_source"]))
+print("     AI:", st["messages"][-1]["text"])
+replies = ["he said never email him, only whatsapp, and not after 9pm", "skip", "his wife places most orders",
+           "asked for store credit instead of refund next time", "nothing else"]
+turns = 0
+while st["state"] == "active" and turns < 12:
+    reply = replies[min(turns, len(replies) - 1)]
+    r = chat.post(f"/v1/sessions/{sid}/debrief/answer",
+                  json={"question_id": st["current_question_id"], "action": "answer", "text": reply})
+    step(f"debrief turn {turns + 1}", r.status_code == 200, r.text[:80] if r.status_code != 200 else "")
+    st = r.json()
+    print("     AI:", st["messages"][-1]["text"])
+    turns += 1
+step("debrief completes", st["state"] == "complete", f"end_reason={st['end_reason']} asked={st['progress']['asked']}")
+step("session token cannot read profiles", chat.get(f"/v1/profiles/{USER}").status_code == 401)
 
 facts = [
     {"category": "contact_preferences", "key": "preferred_channel", "value": "whatsapp", "confidence": 0.95, "evidence": "only whatsapp"},

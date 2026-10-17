@@ -19,7 +19,7 @@ class GeminiProvider:
         self._timeout = timeout
         self._client = client or httpx.Client()
 
-    def complete_json(self, *, system: str, user: str) -> str:
+    def complete_json(self, *, system: str, user: str, timeout: float | None = None) -> str:
         body = {
             "systemInstruction": {"parts": [{"text": system}]},
             "contents": [{"role": "user", "parts": [{"text": user}]}],
@@ -30,7 +30,7 @@ class GeminiProvider:
         last = "unknown error"
         for attempt in range(2):  # one retry on transient failures
             try:
-                r = self._client.post(url, json=body, headers=headers, timeout=self._timeout)
+                r = self._client.post(url, json=body, headers=headers, timeout=timeout or self._timeout)
             except httpx.TransportError as e:
                 last = f"transport error: {type(e).__name__}"
             else:

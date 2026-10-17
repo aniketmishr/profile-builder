@@ -8,6 +8,8 @@ os.environ["DATABASE_URL"] = os.environ.get("TEST_DATABASE_URL") or f"sqlite:///
 os.environ["SESSION_TOKEN_SECRET"] = "test-secret"
 os.environ["ENABLE_DEBUG_ENDPOINTS"] = "true"
 os.environ["PUBLIC_BASE_URL"] = "http://testserver"
+os.environ["PRECOMPUTE_PLANS"] = "false"  # tests opt in explicitly
+os.environ["LLM_PROVIDER"] = "none"
 
 import pytest
 from fastapi.testclient import TestClient

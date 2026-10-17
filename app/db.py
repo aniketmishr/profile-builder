@@ -33,3 +33,8 @@ def get_db() -> Iterator[Session]:
         yield db
     finally:
         db.close()
+
+
+def open_session() -> Session:
+    """For background work that runs outside a request. The caller must close it."""
+    return _sessionmaker()()

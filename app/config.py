@@ -18,7 +18,9 @@ class Settings(BaseSettings):
     llm_provider: str = "none"  # none | gemini
     llm_model: str = ""  # required when llm_provider != none (copy the current model id from the provider)
     gemini_api_key: str = ""
-    llm_timeout_seconds: float = 8.0
+    llm_timeout_seconds: float = 8.0  # planning
+    llm_turn_timeout_seconds: float = 4.0  # per-answer interpretation (keeps turns snappy)
+    precompute_plans: bool = True  # generate the question plan in the background at session intake
     max_questions: int = 7
 
     @field_validator("database_url")

@@ -19,6 +19,11 @@ Reasoning for every major choice is in `docs/decisions/` (ADRs). Progress is in 
 9. **Portability:** no Postgres-only SQL in app code (SQLite is used for fast tests). Migrations are hand-written
    Alembic files; run `alembic check` to detect drift from the models. (ADR 0005)
 
+10. **Debrief flow control is code, not prompts:** question cap, follow-up limits, skip/end and stale-answer
+    checks live in `app/debrief.py`. The LLM only advises (`interpreter`) and every output is validated. (ADR 0008)
+11. **Chat endpoints** must use `deps.get_debrief_repo` (API key or session token bound to one session). Do not
+    hand a session token access to profile or tenant-wide endpoints. (ADR 0009)
+
 ## Workflow for a change
 1. Write or update the ADR first (what, why, alternatives, consequences). Add it to `docs/decisions/README.md`.
 2. Implement with tests. Run `pytest -q` (and with `TEST_DATABASE_URL` for Postgres when touching queries or migrations).
@@ -26,4 +31,4 @@ Reasoning for every major choice is in `docs/decisions/` (ADRs). Progress is in 
 
 ## Map
 `app/api.py` routes (thin) → `app/services.py` / `app/planner.py` (rules) → `app/repo.py` (queries) → models.
-`app/llm/` providers, `app/prompts/` prompt files, `scripts/` seed and smoke, `tests/` unit and isolation tests.
+`app/debrief.py` conversation state machine, `app/interpreter.py` per-answer interpretation, `app/llm/` providers, `app/prompts/` prompt files, `scripts/` seed and smoke, `tests/` unit and isolation tests.

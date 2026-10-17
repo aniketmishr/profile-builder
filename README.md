@@ -16,7 +16,8 @@ The AI debrief chat, extraction and voice come on top of this on Days 2 and 3.
 | Hand-write facts (dev only): `POST /v1/profiles/{id}/facts` | done, gated by `ENABLE_DEBUG_ENDPOINTS` |
 | LLM interface (Gemini provider) + task-aware question planner with deterministic fallback | done (slice 1) |
 | Dev preview `POST /v1/sessions/{id}/plan-preview` | done, gated by `ENABLE_DEBUG_ENDPOINTS` |
-| FR-2 debrief turns, FR-3 voice, FR-4 extraction + confirm | not yet (next slices) |
+| FR-2 debrief conversation API: persisted turns, skip/end, adaptive follow-ups, 7-question cap, session-token auth | done (slice 2) |
+| FR-4 extraction + confirm step, chat UI, mock admin panel, FR-3 voice | not yet (next slices) |
 | `/chat/{session_id}` page that `chat_url` points to | not yet (Day 2), the URL is generated and its token is verifiable |
 
 ## Layout
@@ -29,6 +30,7 @@ app/
   repo.py       ONLY place that queries tenant data; ScopedRepo is locked to one tenant
   deps.py       X-API-Key -> tenant -> ScopedRepo
   planner.py    debrief question planning (LLM + fallback)
+  debrief.py    conversation state machine (turns, limits)   interpreter.py  per-answer interpretation
   llm/          provider interface, validate-and-repair, Gemini provider
   prompts/      versioned prompt files (planner_v1.md)
   models.py  schemas.py  security.py  config.py  db.py  logging.py  ids.py
@@ -86,7 +88,8 @@ budget, and tenant isolation through every endpoint. Both backends pass.
 | `LLM_PROVIDER` | `none` (default, fallback questions only) or `gemini` |
 | `LLM_MODEL` | required with a provider: copy the current model id from Google AI Studio |
 | `GEMINI_API_KEY` | key from Google AI Studio |
-| `LLM_TIMEOUT_SECONDS` / `MAX_QUESTIONS` | default `8` / `7` |
+| `LLM_TIMEOUT_SECONDS` / `LLM_TURN_TIMEOUT_SECONDS` / `MAX_QUESTIONS` | default `8` / `4` / `7` |
+| `PRECOMPUTE_PLANS` | default `true`: build the question plan in the background at intake |
 
 No secrets live in the repo. API keys are stored only as SHA-256 hashes.
 
@@ -162,6 +165,22 @@ Status codes: `201` new session, `200` duplicate call, `401` bad key, `403` body
 - Token counting is a character estimate, not a real tokenizer.
 - No rate limiting, key rotation endpoint or webhook yet. Keys are created with `scripts/seed.py`.
 - `chat_url` points to a page that does not exist until Day 2.
+
+## The debrief conversation
+
+```bash
+# session_id and the token inside chat_url come from POST /v1/sessions
+curl -X POST $BASE/v1/sessions/$SID/debrief/start -H "X-Session-Token: $TOKEN"        # intro + first question
+curl -X POST $BASE/v1/sessions/$SID/debrief/answer -H "X-Session-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"question_id":"<current_question_id from the last response>","action":"answer","text":"only whatsapp, not after 9pm"}'
+#   action: "answer" | "skip" | "end"     (typing "skip" also skips)
+curl $BASE/v1/sessions/$SID/debrief -H "X-Session-Token: $TOKEN"                      # state, messages, progress
+```
+Debrief endpoints accept `X-Session-Token` (embedded chat) or `X-API-Key` (admin panel). Each response is the full
+state (`state`: not_started | active | complete, `current_question_id`, `progress`, `questions`, `messages`).
+`409` means the debrief is complete or not started, or `question_id` is stale (a double-submit).
+Without an LLM it runs on the fallback questions with no adaptivity; with one, answers can trigger a
+follow-up or skip questions the agent already covered.
 
 ## Try the question planner
 
