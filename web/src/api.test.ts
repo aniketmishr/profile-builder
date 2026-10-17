@@ -42,6 +42,25 @@ describe("api client", () => {
     await expect(chatApi("t").getDebrief("s")).rejects.toMatchObject({ status: 0 });
   });
 
+  it("uploads a recording as raw bytes with its own content type and the session token", async () => {
+    const fetch = stubFetch(202, { id: "vn_1" });
+    const blob = new Blob([new Uint8Array([1, 2, 3])], { type: "audio/webm;codecs=opus" });
+    await chatApi("tok123").uploadVoice("ss_1", "dq 1", blob, 4321.7);
+    const [url, init] = fetch.mock.calls[0];
+    expect(url).toBe("/v1/sessions/ss_1/voice?question_id=dq%201&duration_ms=4322");
+    expect(init.method).toBe("POST");
+    expect(init.headers).toEqual({ "X-Session-Token": "tok123", "Content-Type": "audio/webm;codecs=opus" });
+    expect(init.body).toBe(blob); // not JSON-encoded
+  });
+
+  it("polls and retries voice notes on the right paths", async () => {
+    const fetch = stubFetch(200, {});
+    await chatApi("t").getVoiceNote("ss_1", "vn_1");
+    await chatApi("t").retryVoiceNote("ss_1", "vn_1");
+    expect(fetch.mock.calls.map((c) => [c[1].method, c[0]])).toEqual([
+      ["GET", "/v1/sessions/ss_1/voice/vn_1"], ["POST", "/v1/sessions/ss_1/voice/vn_1/retry"]]);
+  });
+
   it("encodes ids in paths", async () => {
     const fetch = stubFetch(200, {});
     await adminApi("k").profile("eu 1/2");

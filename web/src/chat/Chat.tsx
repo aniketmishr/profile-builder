@@ -4,6 +4,8 @@ import { notifyParent } from "../embed";
 import type { ConfirmResult, DebriefMessage, DebriefState, Decision, Extraction } from "../types";
 import { humanize, valueToText } from "./decisions";
 import { Review } from "./Review";
+import { VoiceInput } from "./VoiceInput";
+import { voiceSupported } from "./voice";
 
 interface Props {
   sessionId: string;
@@ -27,6 +29,8 @@ export function Chat({ sessionId, api, pollMs = 1500, maxPolls = 40 }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmEnd, setConfirmEnd] = useState(false);
+  const [voice, setVoice] = useState<{ noteId: string; questionId: string } | null>(null); // transcript now in the box
+  const [voiceBusy, setVoiceBusy] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
@@ -46,6 +50,11 @@ export function Chat({ sessionId, api, pollMs = 1500, maxPolls = 40 }: Props) {
     bottom.current?.scrollIntoView?.({ behavior: "smooth" });
   }, [debrief?.messages.length, pending]);
 
+  const currentQuestionId = debrief?.current_question_id ?? null;
+  useEffect(() => {
+    setVoice(null); // a transcript belongs to the question it was recorded for
+  }, [currentQuestionId]);
+
   async function submit(action: "answer" | "skip" | "end") {
     if (!debrief?.current_question_id || busy) return;
     const sent = text.trim();
@@ -54,14 +63,17 @@ export function Chat({ sessionId, api, pollMs = 1500, maxPolls = 40 }: Props) {
     setError(null);
     setConfirmEnd(false);
     if (action === "answer") setPending(sent);
+    const voiceNoteId = action === "answer" && voice?.questionId === debrief.current_question_id ? voice.noteId : undefined;
     try {
       const next = await api.answer(sessionId, {
         question_id: debrief.current_question_id,
         action,
         ...(action === "answer" ? { text: sent } : {}),
+        ...(voiceNoteId ? { voice_note_id: voiceNoteId } : {}),
       });
       setDebrief(next);
       setText("");
+      setVoice(null);
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
         // The question moved on (double click, another tab). Show the truth instead of failing.
@@ -103,6 +115,7 @@ export function Chat({ sessionId, api, pollMs = 1500, maxPolls = 40 }: Props) {
   }
 
   const active = debrief.state === "active";
+  const canRecord = active && debrief.voice_enabled && voiceSupported() && debrief.current_question_id !== null;
   return (
     <main className="chat">
       <header className="chat-head">
@@ -132,17 +145,34 @@ export function Chat({ sessionId, api, pollMs = 1500, maxPolls = 40 }: Props) {
 
       {active && (
         <footer className="composer">
+          {canRecord && (
+            <VoiceInput
+              api={api}
+              sessionId={sessionId}
+              questionId={debrief.current_question_id!}
+              disabled={busy}
+              pollMs={Math.min(pollMs, 1000)}
+              onBusyChange={setVoiceBusy}
+              onTranscript={(t, noteId) => {
+                setText(t);
+                setVoice({ noteId, questionId: debrief.current_question_id! });
+              }}
+            />
+          )}
           <textarea
             aria-label="Your answer"
-            placeholder="Type a few words…"
+            placeholder={canRecord ? "Type a few words, or record a voice note…" : "Type a few words…"}
             value={text}
             rows={2}
-            disabled={busy}
+            disabled={busy || voiceBusy}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={onKeyDown}
           />
+          {voice?.questionId === debrief.current_question_id && (
+            <p className="muted small">Transcribed from your voice note. Check it and fix anything, then send.</p>
+          )}
           <div className="actions">
-            <button className="primary" disabled={busy || !text.trim()} onClick={() => void submit("answer")}>
+            <button className="primary" disabled={busy || voiceBusy || !text.trim()} onClick={() => void submit("answer")}>
               Send
             </button>
             <button disabled={busy} onClick={() => void submit("skip")}>Skip</button>

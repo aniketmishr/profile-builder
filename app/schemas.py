@@ -174,6 +174,7 @@ class AnswerIn(BaseModel):
     question_id: str = Field(description="id of the question being answered (the current one)")
     action: Literal["answer", "skip", "end"] = "answer"
     text: str | None = Field(default=None, max_length=2000)
+    voice_note_id: str | None = Field(default=None, description="set when the text came from a voice note's transcript")
 
     model_config = ConfigDict(json_schema_extra={"example": {
         "question_id": "dq_replace_with_current_question_id", "action": "answer",
@@ -214,6 +215,7 @@ class DebriefStateOut(BaseModel):
     plan_source: str | None = None
     current_question_id: str | None = None
     progress: DebriefProgress
+    voice_enabled: bool = False
     questions: list[DebriefQuestionOut]
     messages: list[DebriefMessageOut]
 
@@ -269,3 +271,15 @@ class ConfirmOut(BaseModel):
     unchanged: list[FactOut]
     discarded: int
     profile_version: int
+
+
+# ---- voice ------------------------------------------------------------------
+class VoiceNoteOut(BaseModel):
+    id: str
+    status: Literal["queued", "running", "done", "failed"]
+    question_id: str
+    transcript: str | None = None
+    error: str | None = None
+    attempt: int
+    size_bytes: int
+    duration_ms: int | None = None

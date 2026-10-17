@@ -47,6 +47,17 @@ Each slice is a small, shippable change. For every slice: goal, decisions (ADRs)
 - **Verify:** `pytest -q` (83 tests); `cd web && npm ci && npm test && npm run build`;
   `LIVE_API=... LIVE_API_KEY=... npm run test:live` against a running server; open `/admin`, paste a key, press Debrief.
 
+## Slice 5: voice answers (FR-3)
+- **Goal:** record up to about 60 s instead of typing; server transcribes in a persisted background job; the agent edits
+  the transcript before it becomes the answer.
+- **ADRs:** 0013.
+- **Changed:** table `voice_notes` (migration 0004); `app/voice.py`, `app/stt/` (interface, Gemini, dev stub),
+  `app/lookup.py` (shared lookups); endpoints `POST /v1/sessions/{id}/voice`, `GET .../voice/{note_id}`,
+  `POST .../voice/{note_id}/retry`; `voice_note_id` on answers; `voice_enabled` on the debrief state;
+  `web/src/chat/VoiceInput.tsx`, recorder helpers and a fake microphone for tests; `tests/test_voice.py` (34 tests).
+- **Verify:** `pytest -q` (117 tests, SQLite and Postgres); `cd web && npm test` (55 tests);
+  start the server with `STT_PROVIDER=dev` and run `LIVE_VOICE=1 npm run test:live` or
+  `SMOKE_VOICE_FILE=any.webm python -m scripts.smoke`. For real speech set `STT_PROVIDER=gemini`.
+
 ## Next
-- Voice: audio upload, transcription job with polling, editable transcript.
 - Worker + jobs table (replace in-process background tasks), `profile.updated` webhook, profile viewer, polish.

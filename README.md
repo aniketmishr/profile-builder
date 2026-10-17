@@ -19,7 +19,8 @@ The AI debrief chat, extraction and voice come on top of this on Days 2 and 3.
 | FR-2 debrief conversation API: persisted turns, skip/end, adaptive follow-ups, 7-question cap, session-token auth | done (slice 2) |
 | FR-4 structured extraction (schema-valid, evidence-verified) + confirm/edit/discard, saved via one transaction | done (slice 3) |
 | FR-2 chat UI (embeddable, session token, review/confirm screen), FR-7 mock admin panel + profile viewer | done (slice 4) |
-| FR-3 voice, worker + jobs table, `profile.updated` webhook, dashboard | not yet (next slices) |
+| FR-3 voice answers: record, upload, transcription job with polling, editable transcript, private audio | done (slice 5) |
+| Worker + jobs table, `profile.updated` webhook, dashboard, architecture diagram + design note | not yet (next slices) |
 | `/chat/{session_id}` page that `chat_url` points to | not yet (Day 2), the URL is generated and its token is verifiable |
 
 ## Layout
@@ -34,11 +35,12 @@ app/
   planner.py    debrief question planning (LLM + fallback)
   debrief.py    conversation state machine (turns, limits)   interpreter.py  per-answer interpretation
   extraction.py debrief -> proposed facts -> confirm (validation, fallback, persisted run)
+  voice.py      voice notes: upload checks, transcription job, retry     stt/  speech-to-text providers
   llm/          provider interface, validate-and-repair, Gemini provider
   prompts/      versioned prompt files (planner_v1.md)
   models.py  schemas.py  security.py  config.py  db.py  logging.py  ids.py
 web/            React + TypeScript app: embeddable chat, mock admin panel, profile viewer
-migrations/     Alembic (0001_init ... 0003_extraction)
+migrations/     Alembic (0001_init ... 0004_voice)
 docs/           decisions/ (ADRs), slices.md. Agents: read AGENTS.md first
 scripts/        seed.py, smoke.py
 tests/          sessions, profiles, isolation
@@ -95,6 +97,11 @@ budget, and tenant isolation through every endpoint. Both backends pass.
 | `LLM_TIMEOUT_SECONDS` / `LLM_TURN_TIMEOUT_SECONDS` / `MAX_QUESTIONS` | default `8` / `4` / `7` |
 | `FRAME_ANCESTORS` | default `*`: origins allowed to embed the chat in an iframe. Set to your admin panel's origin |
 | `STATIC_DIR` | built web app location (default `app/static`) |
+| `STT_PROVIDER` | `none` (default, voice off), `gemini` (real transcription) or `dev` (fixed stub transcript, for trying the flow) |
+| `STT_MODEL` | Gemini model for audio; falls back to `LLM_MODEL`. Copy the current model id from Google AI Studio |
+| `STT_TIMEOUT_SECONDS` / `MAX_AUDIO_BYTES` / `MAX_AUDIO_SECONDS` | default `30` / `2000000` / `75` |
+| `KEEP_AUDIO` | default `false`: audio is deleted as soon as it is transcribed |
+| `VOICE_STALE_SECONDS` / `MAX_VOICE_NOTES_PER_SESSION` | default `90` / `20` |
 | `AUTO_EXTRACT` | default `true`: start extraction in the background when a debrief completes |
 | `EXTRACTION_TIMEOUT_SECONDS` / `MAX_EXTRACTED_FACTS` / `EXTRACTION_STALE_SECONDS` | default `20` / `20` / `120` |
 | `PRECOMPUTE_PLANS` | default `true`: build the question plan in the background at intake |
@@ -183,7 +190,8 @@ LLM-ready context block. Pressing Debrief on the same task again resumes the sam
 "Start a fresh session" for a new one. The pasted key is a demo shortcut: a real admin panel calls `POST /v1/sessions`
 from its server and only gives the browser the `chat_url`.
 
-To embed the chat yourself: create a session, then `<iframe src="{chat_url}">`. Set `FRAME_ANCESTORS` to your panel's
+To embed the chat yourself: create a session, then `<iframe src="{chat_url}" allow="microphone">` (the `allow` attribute is what lets an
+embedded page record voice). Set `FRAME_ANCESTORS` to your panel's
 origin. When the agent saves, the chat posts `{type: "profile-builder:saved", session_id, saved, discarded}` to the
 parent page.
 
@@ -197,6 +205,26 @@ npm run dev                 # optional: Vite dev server on :5173, proxies /v1 to
 LIVE_API=http://localhost:8000 LIVE_API_KEY=pk_... npm run test:live   # real chat vs a running server
 ```
 The Docker image builds the app in a Node stage, so `docker compose up --build` serves it with no extra steps.
+
+## Voice answers
+
+Set `STT_PROVIDER=gemini` (with `GEMINI_API_KEY` and `STT_MODEL` or `LLM_MODEL`) and a 🎤 button appears in the chat. The agent
+records up to 60 seconds, the audio is transcribed in the background, and the transcript lands in the text box as an editable
+draft: fix it, then Send. Recording needs HTTPS (or localhost) and, inside an iframe, `allow="microphone"` on the iframe.
+`STT_PROVIDER=dev` returns a fixed stub transcript so you can see the whole flow without a key.
+
+```bash
+# raw audio as the body; question_id must be the current question. webm, ogg, mp4, wav and mp3 are accepted
+curl -X POST "$BASE/v1/sessions/$SID/voice?question_id=$QID&duration_ms=4000" -H "X-Session-Token: $TOKEN" \
+  -H "Content-Type: audio/webm" --data-binary @answer.webm              # 202: {id, status: "queued", ...}
+curl $BASE/v1/sessions/$SID/voice/$NOTE_ID -H "X-Session-Token: $TOKEN"   # poll: queued | running | done (transcript) | failed (error)
+curl -X POST $BASE/v1/sessions/$SID/voice/$NOTE_ID/retry -H "X-Session-Token: $TOKEN"
+# send the (edited) transcript as the answer and say where it came from
+curl -X POST $BASE/v1/sessions/$SID/debrief/answer -H "X-Session-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"question_id":"dq_...","action":"answer","text":"he wants WhatsApp only","voice_note_id":"vn_..."}'
+```
+Audio is never served by any endpoint and is deleted as soon as it is transcribed (a failed note keeps it so it can be retried).
+Try it against a running server: `SMOKE_VOICE_FILE=answer.webm python -m scripts.smoke`.
 
 ## The debrief conversation
 

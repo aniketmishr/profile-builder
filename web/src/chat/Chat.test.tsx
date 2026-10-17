@@ -1,9 +1,10 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type ChatApi } from "../api";
 import type { ConfirmResult, DebriefState, Extraction, ExtractedFact } from "../types";
 import { Chat } from "./Chat";
+import { installFakeMedia, removeFakeMedia } from "./fakeMedia";
 
 const msg = (seq: number, role: "ai" | "agent", text: string, extra: object = {}) =>
   ({ id: `m${seq}`, seq, role, text, question_id: null, action: null, created_at: null, ...extra });
@@ -11,7 +12,7 @@ const msg = (seq: number, role: "ai" | "agent", text: string, extra: object = {}
 function state(over: Partial<DebriefState> = {}): DebriefState {
   return {
     session_id: "ss_1", state: "active", end_reason: null, plan_source: "llm", current_question_id: "dq_1",
-    progress: { asked: 1, cap: 7 }, questions: [],
+    progress: { asked: 1, cap: 7 }, voice_enabled: false, questions: [],
     messages: [msg(1, "ai", "Quick debrief on Rahul: refund. 3 short questions."), msg(2, "ai", "How should we contact Rahul?", { question_id: "dq_1" })],
     ...over,
   };
@@ -33,6 +34,9 @@ function fakeApi(over: Partial<Record<keyof ChatApi, unknown>> = {}) {
     getExtraction: vi.fn().mockResolvedValue(extraction()),
     startExtraction: vi.fn().mockResolvedValue(extraction({ status: "running", facts: [] })),
     confirm: vi.fn().mockResolvedValue({ saved: [], unchanged: [], discarded: 0, profile_version: 1 } satisfies ConfirmResult),
+    uploadVoice: vi.fn(),
+    getVoiceNote: vi.fn(),
+    retryVoiceNote: vi.fn(),
     ...over,
   };
   return api as unknown as ChatApi & typeof api;
@@ -245,5 +249,80 @@ describe("summary, review and save", () => {
     expect(await screen.findByText("Nothing to save from this debrief.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Finish" }));
     expect(api.confirm).toHaveBeenCalledWith("ss_1", []);
+  });
+});
+
+describe("voice answers in the chat", () => {
+  const voiceState = (over: Partial<DebriefState> = {}) => state({ voice_enabled: true, ...over });
+  const doneNote = { id: "vn_9", status: "done", question_id: "dq_1", transcript: "he wants whatsapp", error: null, attempt: 1, size_bytes: 7, duration_ms: 900 };
+
+  async function record(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(await screen.findByRole("button", { name: "Record a voice note" }));
+    await user.click(await screen.findByRole("button", { name: "Stop" }));
+  }
+
+  beforeEach(() => { installFakeMedia(); });
+  afterEach(() => removeFakeMedia());
+
+  it("shows the microphone only when the server enabled voice", async () => {
+    render(<Chat sessionId="ss_1" api={fakeApi()} />);
+    await screen.findByLabelText("Your answer");
+    expect(screen.queryByRole("button", { name: "Record a voice note" })).not.toBeInTheDocument();
+  });
+
+  it("hides the microphone when the browser cannot record, even if the server allows it", async () => {
+    removeFakeMedia();
+    render(<Chat sessionId="ss_1" api={fakeApi({ startDebrief: vi.fn().mockResolvedValue(voiceState()) })} />);
+    await screen.findByLabelText("Your answer");
+    expect(screen.queryByRole("button", { name: "Record a voice note" })).not.toBeInTheDocument();
+  });
+
+  it("puts the transcript in the box as an editable draft, and sends it with the voice note id", async () => {
+    const api = fakeApi({
+      startDebrief: vi.fn().mockResolvedValue(voiceState()),
+      uploadVoice: vi.fn().mockResolvedValue({ ...doneNote, status: "queued", transcript: null }),
+      getVoiceNote: vi.fn().mockResolvedValue(doneNote),
+      answer: vi.fn().mockResolvedValue(state()),
+    });
+    const user = userEvent.setup();
+    render(<Chat sessionId="ss_1" api={api} />);
+    await record(user);
+    const box = await screen.findByLabelText("Your answer");
+    await waitFor(() => expect(box).toHaveValue("he wants whatsapp"));
+    expect(screen.getByText(/Transcribed from your voice note/)).toBeInTheDocument();
+    await user.clear(box);
+    await user.type(box, "he wants WhatsApp only");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(api.answer).toHaveBeenCalledWith("ss_1", {
+      question_id: "dq_1", action: "answer", text: "he wants WhatsApp only", voice_note_id: "vn_9",
+    });
+  });
+
+  it("locks the composer while recording or transcribing", async () => {
+    const api = fakeApi({ startDebrief: vi.fn().mockResolvedValue(voiceState()) });
+    const user = userEvent.setup();
+    render(<Chat sessionId="ss_1" api={api} />);
+    await user.click(await screen.findByRole("button", { name: "Record a voice note" }));
+    await screen.findByRole("button", { name: "Stop" });
+    expect(screen.getByLabelText("Your answer")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+  });
+
+  it("does not attach a voice note to an answer for a different question", async () => {
+    const q2 = voiceState({ current_question_id: "dq_2", messages: [...state().messages, msg(3, "ai", "Second?", { question_id: "dq_2" })] });
+    const api = fakeApi({
+      startDebrief: vi.fn().mockResolvedValue(voiceState()),
+      uploadVoice: vi.fn().mockResolvedValue(doneNote),
+      answer: vi.fn().mockResolvedValue(q2),
+    });
+    const user = userEvent.setup();
+    render(<Chat sessionId="ss_1" api={api} />);
+    await record(user);
+    await waitFor(() => expect(screen.getByLabelText("Your answer")).toHaveValue("he wants whatsapp"));
+    await user.click(screen.getByRole("button", { name: "Skip" }));  // moves on to question 2
+    await screen.findByText("Second?");
+    await user.type(screen.getByLabelText("Your answer"), "typed answer");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(api.answer).toHaveBeenLastCalledWith("ss_1", { question_id: "dq_2", action: "answer", text: "typed answer" });
   });
 });

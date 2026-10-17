@@ -21,7 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from app import services
 from app.config import get_settings
 from app.db import open_session
-from app.debrief import _require_session
+from app.lookup import require_session as _require_session
 from app.llm import LLMError, LLMProvider, generate_structured
 from app.logging import log, session_ctx
 from app.models import Extraction

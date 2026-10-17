@@ -18,3 +18,4 @@ changes, add a new ADR and mark the old one `Superseded by NNNN`.
 | [0010](0010-extraction-pipeline.md) | Extraction pipeline: validated proposals, persisted run, safe fallback | 3 |
 | [0011](0011-confirm-step.md) | Confirm step: default keep, explicit edit/discard, one transaction | 3 |
 | [0012](0012-web-ui-and-embedding.md) | Web UI: one React app, served by the API, embeddable by iframe | 4 |
+| [0013](0013-voice-answers.md) | Voice answers: private audio, persisted transcription job, editable transcript | 5 |

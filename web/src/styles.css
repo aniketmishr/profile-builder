@@ -71,3 +71,9 @@ th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line
 td.evidence { color: var(--muted); }
 .context { background: var(--card); padding: 10px; border-radius: 8px; white-space: pre-wrap; }
 details { margin: 4px 0; } .old { opacity: .7; }
+
+/* voice */
+.voice { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.rec { color: var(--err); font-variant-numeric: tabular-nums; }
+.error.inline { margin: 0; }
+.small { font-size: 13px; margin: 4px 0 0; }

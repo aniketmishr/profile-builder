@@ -29,6 +29,9 @@ Reasoning for every major choice is in `docs/decisions/` (ADRs). Progress is in 
 13. **The chat holds only the session token.** Never put the tenant API key, or code that needs it, in the chat
     code path. Keep `web/src/types.ts` in sync with `app/schemas.py`. The chat page must stay embeddable
     (`frame-ancestors` from config) and must not log or cache the token. (ADR 0012)
+14. **Voice audio is private and short-lived.** Never add an endpoint that serves audio, never log audio or transcript
+    text, and keep the content sniffing and size caps. A transcript is only a draft until the agent sends it as the
+    answer. Speech-to-text goes through `app/stt` like the LLM goes through `app/llm`. (ADR 0013)
 
 ## Workflow for a change
 1. Write or update the ADR first (what, why, alternatives, consequences). Add it to `docs/decisions/README.md`.
@@ -37,5 +40,5 @@ Reasoning for every major choice is in `docs/decisions/` (ADRs). Progress is in 
 
 ## Map
 `app/api.py` routes (thin) → `app/services.py` / `app/planner.py` (rules) → `app/repo.py` (queries) → models.
-`app/debrief.py` conversation state machine, `app/interpreter.py` per-answer interpretation, `app/extraction.py` extraction + confirm, `app/llm/` providers, `app/prompts/` prompt files, `app/web.py` serves the built React app from `web/` (chat, mock admin panel, profile viewer), `scripts/` seed and smoke,
+`app/debrief.py` conversation state machine, `app/interpreter.py` per-answer interpretation, `app/extraction.py` extraction + confirm, `app/voice.py` + `app/stt/` voice notes and speech-to-text providers, `app/llm/` providers, `app/prompts/` prompt files, `app/web.py` serves the built React app from `web/` (chat, mock admin panel, profile viewer), `scripts/` seed and smoke,
 `tests/` backend tests, `web/src/**/*.test.tsx` frontend tests.

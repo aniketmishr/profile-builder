@@ -4,6 +4,7 @@
 
 Needs ENABLE_DEBUG_ENDPOINTS=true on the server (it writes facts by hand).
 """
+import mimetypes
 import os
 import sys
 import time
@@ -57,13 +58,34 @@ chat = httpx.Client(base_url=BASE, headers={"X-Session-Token": token}, timeout=6
 st = chat.post(f"/v1/sessions/{sid}/debrief/start").json()
 step("debrief start (session token)", st["state"] == "active" and len(st["messages"]) == 2, "plan_source=" + str(st["plan_source"]))
 print("     AI:", st["messages"][-1]["text"])
+voice_note_id = None
+voice_file = os.environ.get("SMOKE_VOICE_FILE")
+if st.get("voice_enabled") and voice_file:  # exercise the voice path with a real recording (or any file with the dev provider)
+    mime = mimetypes.guess_type(voice_file)[0] or "application/octet-stream"
+    with open(voice_file, "rb") as fh:
+        up = chat.post(f"/v1/sessions/{sid}/voice", params={"question_id": st["current_question_id"], "duration_ms": 3000},
+                       content=fh.read(), headers={"Content-Type": mime})
+    step("voice upload accepted", up.status_code == 202, up.text[:100] if up.status_code != 202 else "")
+    note = up.json()
+    for _ in range(45):
+        if note["status"] in ("done", "failed"):
+            break
+        time.sleep(1)
+        note = chat.get(f"/v1/sessions/{sid}/voice/{note['id']}").json()
+    step("voice transcribed", note["status"] == "done", f"transcript: {note.get('transcript')!r}" if note["status"] == "done" else str(note.get("error")))
+    voice_note_id = note["id"]
+elif st.get("voice_enabled"):
+    print("     voice is enabled: set SMOKE_VOICE_FILE=<audio file> to test it too")
+
 replies = ["he said never email him, only whatsapp, and not after 9pm", "skip", "his wife places most orders",
            "asked for store credit instead of refund next time", "nothing else"]
 turns = 0
 while st["state"] == "active" and turns < 12:
     reply = replies[min(turns, len(replies) - 1)]
-    r = chat.post(f"/v1/sessions/{sid}/debrief/answer",
-                  json={"question_id": st["current_question_id"], "action": "answer", "text": reply})
+    body = {"question_id": st["current_question_id"], "action": "answer", "text": reply}
+    if voice_note_id and turns == 0:
+        body["text"], body["voice_note_id"] = note["transcript"], voice_note_id  # first answer comes from the voice note
+    r = chat.post(f"/v1/sessions/{sid}/debrief/answer", json=body)
     step(f"debrief turn {turns + 1}", r.status_code == 200, r.text[:80] if r.status_code != 200 else "")
     st = r.json()
     print("     AI:", st["messages"][-1]["text"])

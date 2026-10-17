@@ -2,7 +2,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     JSON, Boolean, DateTime, Float, ForeignKey, ForeignKeyConstraint, Index,
-    Integer, String, Text, UniqueConstraint, func, text,
+    Integer, LargeBinary, String, Text, UniqueConstraint, func, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -207,4 +207,33 @@ class ExtractedFact(Base):
     __table_args__ = (
         ForeignKeyConstraint(["tenant_id", "session_id"], ["extractions.tenant_id", "extractions.session_id"]),
         Index("ix_extracted_facts_session", "tenant_id", "session_id"),
+    )
+
+
+class VoiceNote(Base):
+    """A recorded answer and its transcription job. status: queued | running | done | failed.
+    `audio` is private (never served) and cleared once transcribed unless KEEP_AUDIO is set or the job failed."""
+    __tablename__ = "voice_notes"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String)
+    session_id: Mapped[str] = mapped_column(String)
+    question_id: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="queued")
+    attempt: Mapped[int] = mapped_column(Integer, default=1)
+    mime_type: Mapped[str] = mapped_column(String)
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    audio: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider: Mapped[str | None] = mapped_column(String, nullable=True)
+    model: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(["tenant_id", "session_id"], ["debriefs.tenant_id", "debriefs.session_id"]),
+        Index("ix_voice_notes_session", "tenant_id", "session_id"),
     )

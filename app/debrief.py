@@ -13,11 +13,13 @@ from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 
 from app import interpreter, planner
+from app import voice as voice_mod
 from app.config import get_settings
 from app.db import open_session
 from app.llm import LLMProvider
 from app.logging import log, session_ctx
 from app.models import Debrief, DebriefQuestion, DebriefSession
+from app.lookup import current_question as _current, require_session as _require_session
 from app.repo import ScopedRepo
 from app.schemas import (
     AnswerIn, DebriefMessageOut, DebriefProgress, DebriefQuestionOut, DebriefStateOut,
@@ -29,20 +31,8 @@ ASKED_STATUSES = ("asked", "answered", "skipped")
 
 
 # ---- helpers ----------------------------------------------------------------
-def _require_session(repo: ScopedRepo, session_id: str) -> DebriefSession:
-    session = repo.get_session(session_id)
-    if session is None:
-        raise HTTPException(404, "session not found")
-    session_ctx.set(session_id)
-    return session
-
-
 def _asked_count(qs: list[DebriefQuestion]) -> int:
     return sum(1 for q in qs if q.status in ASKED_STATUSES)
-
-
-def _current(qs: list[DebriefQuestion]) -> DebriefQuestion | None:
-    return next((q for q in qs if q.status == "asked"), None)
 
 
 def _plan_input(repo: ScopedRepo, session: DebriefSession) -> planner.PlanInput:
@@ -176,12 +166,15 @@ def submit(repo: ScopedRepo, llm: LLMProvider | None, session_id: str, body: Ans
             and not any(q.parent_id == current.id for q in qs)
             and _asked_count(qs) < cap
         )
+        voice = (voice_mod.use_in_answer(repo, session_id, current.id, body.voice_note_id, text)
+                 if body.voice_note_id else None)
         pending = [(f"q{q.seq}", q.text) for q in qs if q.status == "pending"]
         interp = interpreter.interpret_answer(
             llm, question=current.text, category=current.category, answer=text,
             pending=pending, follow_up_allowed=follow_up_ok,
         )
-        say("agent", text, question_id=current.id, action="answer", meta=interp.meta())
+        say("agent", text, question_id=current.id, action="answer",
+            meta={**interp.meta(), **({"voice": voice} if voice else {})})
         current.status = "answered"
         for q in qs:
             if q.status == "pending" and f"q{q.seq}" in interp.covered:

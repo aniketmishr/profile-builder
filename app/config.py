@@ -26,6 +26,15 @@ class Settings(BaseSettings):
     extraction_stale_seconds: int = 120  # a 'running' extraction older than this may be re-run
     static_dir: str = ""  # built web app; default is app/static (filled by the Docker build)
     frame_ancestors: str = "*"  # who may embed the chat in an iframe; set to your admin panel's origin in production
+    # Voice answers (speech to text). "none" disables voice; "dev" returns a fixed stub transcript (demo/testing only).
+    stt_provider: str = "none"  # none | gemini | dev
+    stt_model: str = ""  # falls back to LLM_MODEL (Gemini flash models accept audio)
+    stt_timeout_seconds: float = 30.0
+    max_audio_bytes: int = 2_000_000
+    max_audio_seconds: int = 75  # the chat stops at 60; a little slack for upload timing
+    keep_audio: bool = False  # default: delete the audio as soon as it is transcribed
+    voice_stale_seconds: int = 90  # a queued/running note older than this is re-queued when polled
+    max_voice_notes_per_session: int = 20
     precompute_plans: bool = True  # generate the question plan in the background at session intake
     max_questions: int = 7
 

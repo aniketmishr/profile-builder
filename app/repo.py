@@ -6,14 +6,14 @@ wrong one. Composite foreign keys in the schema back this up at the database lev
 """
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.ids import new_id
 from app.models import (
     Agent, ApiKey, Debrief, DebriefMessage, DebriefQuestion, DebriefSession, EndUser, ExtractedFact,
-    Extraction, ProfileFact,
+    Extraction, ProfileFact, VoiceNote,
 )
 from app.security import keys_match, parse_prefix
 
@@ -208,3 +208,23 @@ class ScopedRepo:
         for row in self.extracted_facts(session_id):
             self.db.delete(row)
         self.db.flush()
+
+    # ---- voice --------------------------------------------------------------
+    def create_voice_note(self, session_id: str, **fields) -> VoiceNote:
+        row = VoiceNote(id=new_id("vn"), tenant_id=self.tenant_id, session_id=session_id, **fields)
+        self.db.add(row)
+        self.db.flush()
+        return row
+
+    def get_voice_note(self, note_id: str, session_id: str | None = None, lock: bool = False) -> VoiceNote | None:
+        q = self._select(VoiceNote).where(VoiceNote.id == note_id)
+        if session_id is not None:
+            q = q.where(VoiceNote.session_id == session_id)
+        if lock:
+            q = q.with_for_update()
+        return self.db.execute(q).scalar_one_or_none()
+
+    def count_voice_notes(self, session_id: str) -> int:
+        q = select(func.count()).select_from(VoiceNote).where(
+            VoiceNote.tenant_id == self.tenant_id, VoiceNote.session_id == session_id)
+        return self.db.execute(q).scalar_one()

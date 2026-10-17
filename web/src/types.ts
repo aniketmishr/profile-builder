@@ -27,6 +27,7 @@ export interface DebriefState {
   plan_source: string | null;
   current_question_id: string | null;
   progress: { asked: number; cap: number };
+  voice_enabled: boolean;
   questions: DebriefQuestion[];
   messages: DebriefMessage[];
 }
@@ -35,6 +36,18 @@ export interface AnswerBody {
   question_id: string;
   action: "answer" | "skip" | "end";
   text?: string;
+  voice_note_id?: string; // set when the text came from a voice note's transcript
+}
+
+export interface VoiceNote {
+  id: string;
+  status: "queued" | "running" | "done" | "failed";
+  question_id: string;
+  transcript: string | null;
+  error: string | null;
+  attempt: number;
+  size_bytes: number;
+  duration_ms: number | null;
 }
 
 export interface ExtractedFact {

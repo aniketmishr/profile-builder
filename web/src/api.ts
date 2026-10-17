@@ -1,6 +1,6 @@
 import type {
   AnswerBody, ConfirmResult, ContextOut, DebriefState, Decision, Extraction, History, Profile,
-  SessionCreateBody, SessionOut,
+  SessionCreateBody, SessionOut, VoiceNote,
 } from "./types";
 
 export class ApiError extends Error {
@@ -22,13 +22,18 @@ function detailMessage(body: unknown, fallback: string): string {
   return fallback;
 }
 
-async function call<T>(auth: Auth, method: string, path: string, body?: unknown): Promise<T> {
+/** `body` is sent as JSON; `blob` (a recording) is sent as-is with its own content type. */
+async function call<T>(auth: Auth, method: string, path: string, body?: unknown, blob?: Blob): Promise<T> {
   let res: Response;
   try {
     res = await fetch(path, {
       method,
-      headers: { ...authHeaders(auth), ...(body !== undefined ? { "Content-Type": "application/json" } : {}) },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      headers: {
+        ...authHeaders(auth),
+        ...(blob ? { "Content-Type": blob.type || "application/octet-stream" } : {}),
+        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+      },
+      body: blob ?? (body !== undefined ? JSON.stringify(body) : undefined),
     });
   } catch {
     throw new ApiError(0, "Can't reach the server. Check your connection and try again.");
@@ -48,6 +53,10 @@ export function chatApi(token: string) {
     answer: (id: string, body: AnswerBody) => call<DebriefState>(auth, "POST", `${s(id)}/debrief/answer`, body),
     getExtraction: (id: string) => call<Extraction>(auth, "GET", `${s(id)}/extraction`),
     startExtraction: (id: string) => call<Extraction>(auth, "POST", `${s(id)}/extraction`),
+    uploadVoice: (id: string, questionId: string, blob: Blob, durationMs: number) =>
+      call<VoiceNote>(auth, "POST", `${s(id)}/voice?question_id=${encodeURIComponent(questionId)}&duration_ms=${Math.round(durationMs)}`, undefined, blob),
+    getVoiceNote: (id: string, noteId: string) => call<VoiceNote>(auth, "GET", `${s(id)}/voice/${encodeURIComponent(noteId)}`),
+    retryVoiceNote: (id: string, noteId: string) => call<VoiceNote>(auth, "POST", `${s(id)}/voice/${encodeURIComponent(noteId)}/retry`),
     confirm: (id: string, decisions: Decision[]) =>
       call<ConfirmResult>(auth, "POST", `${s(id)}/extraction/confirm`, { decisions }),
   };

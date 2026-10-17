@@ -1,22 +1,29 @@
 from typing import Literal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import PlainTextResponse
 
-from app import debrief, extraction, planner, services
+from app import debrief, extraction, planner, services, voice
 from app.config import get_settings
 from app.deps import get_debrief_repo, get_repo
 from app.llm import LLMProvider, get_llm
+from app.stt import Transcriber, get_transcriber
 from app.models import DebriefSession
 from app.repo import ScopedRepo
 from app.schemas import (
     AnswerIn, ConfirmIn, ConfirmOut, ContextOut, DebriefStateOut, ExtractionOut, FactHistory, FactOut, FactsIn, FactsWritten, HistoryOut, PlanPreviewOut,
-    PlannedQuestionOut, ProfileOut, SessionCreate, SessionOut, SessionRef,
+    PlannedQuestionOut, ProfileOut, SessionCreate, SessionOut, SessionRef, VoiceNoteOut,
 )
 from app.security import make_session_token
 
 router = APIRouter(prefix="/v1")
 debug_router = APIRouter(prefix="/v1", tags=["dev"])
+
+
+def _with_voice(state: DebriefStateOut, stt: Transcriber | None) -> DebriefStateOut:
+    state.voice_enabled = stt is not None  # lets the chat decide whether to show the microphone
+    return state
 
 
 def _session_out(row: DebriefSession, created: bool) -> SessionOut:
@@ -71,15 +78,19 @@ def start_debrief(
     session_id: str,
     repo: ScopedRepo = Depends(get_debrief_repo),
     llm: LLMProvider | None = Depends(get_llm),
+    stt: Transcriber | None = Depends(get_transcriber),
 ):
     """Open the debrief: creates the plan if needed and posts the intro and first question. Idempotent."""
-    return debrief.start(repo, session_id, llm)
+    return _with_voice(debrief.start(repo, session_id, llm), stt)
 
 
 @router.get("/sessions/{session_id}/debrief", response_model=DebriefStateOut, tags=["debrief"])
-def get_debrief(session_id: str, repo: ScopedRepo = Depends(get_debrief_repo)):
+def get_debrief(
+    session_id: str, repo: ScopedRepo = Depends(get_debrief_repo),
+    stt: Transcriber | None = Depends(get_transcriber),
+):
     """Current conversation state: messages, question statuses, progress. Safe to poll or reload."""
-    return debrief.get_state(repo, session_id)
+    return _with_voice(debrief.get_state(repo, session_id), stt)
 
 
 @router.post(
@@ -90,15 +101,87 @@ def answer_debrief(
     session_id: str, body: AnswerIn, background: BackgroundTasks,
     repo: ScopedRepo = Depends(get_debrief_repo),
     llm: LLMProvider | None = Depends(get_llm),
+    stt: Transcriber | None = Depends(get_transcriber),
 ):
     """Answer, skip, or end the debrief. Returns the updated state including the AI's next message.
-    When the debrief completes, extraction starts in the background (poll `GET .../extraction`)."""
-    state = debrief.submit(repo, llm, session_id, body)
+    When the debrief completes, extraction starts in the background (poll `GET .../extraction`).
+    Set `voice_note_id` when `text` came from a voice note's (possibly edited) transcript."""
+    state = _with_voice(debrief.submit(repo, llm, session_id, body), stt)
     if state.state == "complete" and get_settings().auto_extract:
         _, should_run = extraction.request(repo, session_id, force=False)
         if should_run:
             background.add_task(extraction.run_extraction, repo.tenant_id, session_id, llm)
     return state
+
+
+# ---- voice answers (API key OR session token) ------------------------------------------------
+AUDIO_BODY = {"requestBody": {"required": True, "content": {
+    t: {"schema": {"type": "string", "format": "binary"}}
+    for t in ("audio/webm", "audio/ogg", "audio/mp4", "audio/wav", "audio/mpeg")}}}
+
+
+async def _read_capped(request: Request, cap: int) -> bytes:
+    """Read the body but stop as soon as it exceeds the cap (never buffer an unbounded upload)."""
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > cap:
+        raise HTTPException(413, "recording too large")
+    buf = bytearray()
+    async for chunk in request.stream():
+        buf.extend(chunk)
+        if len(buf) > cap:
+            raise HTTPException(413, "recording too large")
+    return bytes(buf)
+
+
+@router.post(
+    "/sessions/{session_id}/voice", response_model=VoiceNoteOut, status_code=202, tags=["voice"],
+    openapi_extra=AUDIO_BODY,
+    responses={409: {"description": "Debrief not active, or `question_id` is not the current question"},
+               413: {"description": "Recording too large"}, 415: {"description": "Not a supported audio format"},
+               429: {"description": "Too many voice notes for this session"},
+               503: {"description": "Voice transcription is not configured"}},
+)
+async def upload_voice(
+    session_id: str, request: Request, background: BackgroundTasks,
+    question_id: str = Query(..., description="the current question being answered"),
+    duration_ms: int | None = Query(None, ge=0),
+    repo: ScopedRepo = Depends(get_debrief_repo),
+    stt: Transcriber | None = Depends(get_transcriber),
+):
+    """Upload a recorded answer (raw audio bytes as the request body). Transcription runs in the background:
+    poll `GET .../voice/{note_id}` until `status` is `done` or `failed`."""
+    if stt is None:
+        raise HTTPException(503, "voice transcription is not configured")
+    data = await _read_capped(request, get_settings().max_audio_bytes)
+    note = await run_in_threadpool(voice.create_note, repo, session_id, question_id, data, duration_ms)
+    background.add_task(voice.run_transcription, repo.tenant_id, note.id, stt)
+    return voice.to_out(note)
+
+
+@router.get("/sessions/{session_id}/voice/{note_id}", response_model=VoiceNoteOut, tags=["voice"])
+def get_voice_note(
+    session_id: str, note_id: str, background: BackgroundTasks,
+    repo: ScopedRepo = Depends(get_debrief_repo),
+    stt: Transcriber | None = Depends(get_transcriber),
+):
+    """Poll a voice note. The transcript is a draft: show it to the agent to edit before it is used as the answer.
+    A note stuck in queued/running (the process died) is re-queued by this call."""
+    note, requeued = voice.get_note(repo, session_id, note_id)
+    if requeued:
+        background.add_task(voice.run_transcription, repo.tenant_id, note.id, stt)
+    return voice.to_out(note)
+
+
+@router.post("/sessions/{session_id}/voice/{note_id}/retry", response_model=VoiceNoteOut, status_code=202, tags=["voice"],
+             responses={409: {"description": "Only a failed note that still has its recording can be retried"}})
+def retry_voice_note(
+    session_id: str, note_id: str, background: BackgroundTasks,
+    repo: ScopedRepo = Depends(get_debrief_repo),
+    stt: Transcriber | None = Depends(get_transcriber),
+):
+    note = voice.retry(repo, session_id, note_id)
+    background.add_task(voice.run_transcription, repo.tenant_id, note.id, stt)
+    return voice.to_out(note)
 
 
 # ---- extraction + confirm (API key OR session token) -------------------------------------

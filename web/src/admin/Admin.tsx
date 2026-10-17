@@ -145,7 +145,8 @@ export function Admin() {
                 <p className="muted">
                   {active.session.created ? "New session" : "Resumed existing session"} <code>{active.session.session_id}</code>
                 </p>
-                <iframe title="Debrief chat" src={active.session.chat_url} />
+                {/* allow="microphone": an embedded page may only record if the host page grants it */}
+                <iframe title="Debrief chat" src={active.session.chat_url} allow="microphone" />
               </>
             ) : (
               <p className="muted">Pick a task and press Debrief to open the chat here.</p>
