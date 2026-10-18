@@ -1,273 +1,327 @@
-# Profile Builder: Day 1 foundation
+# Profile Builder
 
-FastAPI + Postgres service that stores per-user profile facts captured after support tasks.
-This is the Day 1 spine: **data model, session intake, profile store, retrieval API, deployable.**
-The AI debrief chat, extraction and voice come on top of this on Days 2 and 3.
+An AI-powered user profiling system for a support operation. When a human agent finishes a task, the system runs a short
+AI-led debrief with the agent (typed or spoken), extracts structured, evidence-backed facts about the customer, lets the
+agent confirm or edit them, and stores them in a growing per-user profile that other AI systems read through an API.
 
-## What is built
+Built as a 3-day take-home with FastAPI, PostgreSQL and React.
 
-| Requirement | Status |
-|---|---|
-| FR-1 `POST /v1/sessions`, idempotent on `(tenant_id, idempotency_key)`, returns `session_id` + signed `chat_url` | done |
-| FR-5 append-only fact store, supersede with history, merged "current" view | done |
-| FR-5 isolation enforced in one place + automated cross-tenant tests | done |
-| FR-6 `GET /v1/profiles/{id}`, `/history`, `/context?max_tokens=` (no LLM on read path), API keys, Swagger at `/docs` | done |
-| FR-8 JSON logs with tenant/session ids, `/health` with DB check, seed script | done |
-| Hand-write facts (dev only): `POST /v1/profiles/{id}/facts` | done, gated by `ENABLE_DEBUG_ENDPOINTS` |
-| LLM interface (Gemini provider) + task-aware question planner with deterministic fallback | done (slice 1) |
-| Dev preview `POST /v1/sessions/{id}/plan-preview` | done, gated by `ENABLE_DEBUG_ENDPOINTS` |
-| FR-2 debrief conversation API: persisted turns, skip/end, adaptive follow-ups, 7-question cap, session-token auth | done (slice 2) |
-| FR-4 structured extraction (schema-valid, evidence-verified) + confirm/edit/discard, saved via one transaction | done (slice 3) |
-| FR-2 chat UI (embeddable, session token, review/confirm screen), FR-7 mock admin panel + profile viewer | done (slice 4) |
-| FR-3 voice answers: record, upload, transcription job with polling, editable transcript, private audio | done (slice 5) |
-| Worker + jobs table, `profile.updated` webhook, dashboard, architecture diagram + design note | not yet (next slices) |
-| `/chat/{session_id}` page that `chat_url` points to | not yet (Day 2), the URL is generated and its token is verifiable |
+**Start here:** [Reviewer guide](REVIEWER_GUIDE.md) (test the hosted app in 10 minutes) ·
+[Design note](docs/design-note.pdf) · [Architecture diagram](docs/diagrams/architecture.png) ·
+[Data model](docs/diagrams/data-model.png) · [Decision records](docs/decisions/README.md) · API docs at `/docs` on the running app.
 
-## Layout
+## How it works
 
-```
-app/
-  main.py       app, /health, access log
-  api.py        routes (thin: parse, call service, return)
-  services.py   business rules: idempotent intake, apply_facts (conflict rule), context builder
-  repo.py       ONLY place that queries tenant data; ScopedRepo is locked to one tenant
-  deps.py       X-API-Key -> tenant -> ScopedRepo
-  planner.py    debrief question planning (LLM + fallback)
-  debrief.py    conversation state machine (turns, limits)   interpreter.py  per-answer interpretation
-  extraction.py debrief -> proposed facts -> confirm (validation, fallback, persisted run)
-  voice.py      voice notes: upload checks, transcription job, retry     stt/  speech-to-text providers
-  llm/          provider interface, validate-and-repair, Gemini provider
-  prompts/      versioned prompt files (planner_v1.md)
-  models.py  schemas.py  security.py  config.py  db.py  logging.py  ids.py
-web/            React + TypeScript app: embeddable chat, mock admin panel, profile viewer
-migrations/     Alembic (0001_init ... 0004_voice)
-docs/           decisions/ (ADRs), slices.md. Agents: read AGENTS.md first
-scripts/        seed.py, smoke.py
-tests/          sessions, profiles, isolation
-```
+1. A task closes. The admin panel's server calls `POST /v1/sessions` with the tenant API key and the task context. The call
+   is idempotent and returns a session id and a `chat_url` carrying a signed token.
+2. The admin panel embeds `chat_url` in an iframe. The AI leads a short debrief: 3 to 7 questions tailored to the task,
+   answered by typing or by a voice note that is transcribed and can be edited.
+3. The AI adapts: it skips questions an earlier answer already covered and asks at most one follow-up for an unclear answer.
+4. When the debrief ends, the AI proposes facts. Each fact must quote the agent's own words, which code verifies.
+5. The agent keeps, edits or discards each fact and confirms. The facts are saved in one transaction.
+6. Facts are append-only: a new value supersedes the old one and the old one stays in history. Other AI systems read the
+   merged profile, the history, or an LLM-ready context block. No LLM runs on the read path.
 
-## Run locally
+## Architecture
 
-### Option A: Docker (one command)
+![Architecture and request flow](docs/diagrams/architecture.png)
+
+![Data model](docs/diagrams/data-model.png)
+
+One FastAPI service (API, background tasks, and the built React app) plus PostgreSQL. LLM and speech-to-text providers sit
+behind small interfaces (Gemini is implemented). Tenant isolation is enforced in one repository layer and backed by
+composite foreign keys. The reasoning behind each choice is in the [design note](docs/design-note.pdf) and the
+[decision records](docs/decisions/README.md).
+
+## Requirements status
+
+| Requirement | Status | Notes |
+|---|---|---|
+| FR-1 Session intake | Done | `POST /v1/sessions`, scoped by tenant, agent and end user, idempotent on `(tenant_id, idempotency_key)`, returns a session id and chat URL |
+| FR-2 AI-guided debrief chat | Done | Task-aware plan, at most 7 questions (enforced in code), skip, end early, skips covered questions, one follow-up for ambiguity |
+| FR-3 Voice with transcription | Done | Record up to 60 s, background transcription job with polling, editable transcript, audio private and deleted after use |
+| FR-4 Structured extraction | Done | Pydantic schema, 7 categories, confidence, evidence quote verified in code, confirm / edit / discard before saving |
+| FR-5 Per-user profile store | Done | Append-only history, documented conflict rule, isolation tests across every endpoint |
+| FR-6 Retrieval API | Done | `GET /v1/profiles/{id}`, `/context` (with `max_tokens`), `/history`; API keys hashed at rest; OpenAPI at `/docs` |
+| FR-7 Admin panel integration | Partial | Embeddable chat, mock admin panel and profile viewer done. **The `profile.updated` webhook was not built** |
+| FR-8 Operational basics | Partial | Structured JSON logs with tenant and session ids, `/health`, graceful provider failure with fallbacks, seed script done. **Dashboard and PII redaction toggle not built** |
+
+Also not built: a separate worker with a jobs table (background work runs in-process with its state saved in the database)
+and the optional demo video. See [Limitations](#limitations-and-what-was-cut).
+
+## Quick start
+
+### Hosted
+
+Follow the [reviewer guide](REVIEWER_GUIDE.md). It needs the app URL and demo keys from the submission email.
+
+### Local with Docker
 
 ```bash
-docker compose up --build            # API on http://localhost:8000, Swagger at /docs
-docker compose run --rm api python -m scripts.seed    # prints one API key per demo tenant
+docker compose up --build                              # app + API on http://localhost:8000
+docker compose run --rm api python -m scripts.seed     # prints one API key per demo tenant (shown once)
 ```
 
-### Option B: without Docker
+Open http://localhost:8000/admin, paste the `tn_acme` key and press **Debrief** on a task. Swagger is at http://localhost:8000/docs.
+The compose file turns on the dev endpoints and uses fallback questions; see [Configuration](#configuration) to enable the LLM and voice.
+
+### Local without Docker
+
+Needs Python 3.11 or newer (developed on 3.12) and Node 20 or newer (developed on 22).
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-cp .env.example .env                 # point DATABASE_URL at any Postgres (or delete the line to use SQLite)
+cp .env.example .env            # point DATABASE_URL at a Postgres, or delete that line to use SQLite (dev.db)
 alembic upgrade head
-python -m scripts.seed
-uvicorn app.main:app --reload
+python -m scripts.seed          # prints one API key per demo tenant (shown once)
+(cd web && npm ci && npm run build:api)    # builds the UI into app/static
+uvicorn app.main:app --reload   # http://localhost:8000/admin
 ```
 
-### Try it
+### Check the whole flow from the command line
 
 ```bash
-export API_KEY=pk_...                # from the seed output (tn_acme)
-BASE_URL=http://localhost:8000 python -m scripts.smoke    # runs the whole Day 1 flow
+API_KEY=pk_... BASE_URL=http://localhost:8000 python -m scripts.smoke
 ```
+
+It creates a session, runs a debrief with the session token, waits for extraction, confirms, and reads the profile back.
+It needs `ENABLE_DEBUG_ENDPOINTS=true`. Add `SMOKE_VOICE_FILE=answer.webm` to include a voice answer when voice is enabled.
 
 ## Tests
 
 ```bash
-pytest -q                                              # SQLite, no setup needed
-TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/profiles_test pytest -q   # empty Postgres DB
+pytest -q                                   # backend: 117 tests on SQLite, no setup needed
+TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/profiles_test pytest -q   # same suite on an empty Postgres
+cd web && npm ci && npm test                # frontend: 55 component tests with a mocked API
+cd web && npm run typecheck                 # TypeScript
+# optional end-to-end: the real chat component against a running server (no mocks)
+LIVE_API=http://localhost:8000 LIVE_API_KEY=pk_... npm run test:live
 ```
-They cover idempotency (including the insert-race path), supersede + history, validation, the context
-budget, and tenant isolation through every endpoint. Both backends pass.
 
-## Environment variables
+What the tests cover: tenant isolation through every endpoint, idempotent intake (including the insert race), supersede and
+history, the question cap and follow-up limits, stale and double-submitted answers, evidence verification, atomic confirm,
+voice upload validation and job recovery, session-token scope, and the chat flows (edit, discard, retry, resume).
+Both databases must pass. For the voice end-to-end test start the server with `STT_PROVIDER=dev` and set `LIVE_VOICE=1`.
 
-| Name | Purpose |
-|---|---|
-| `DATABASE_URL` | Postgres URL (`postgres://` and `postgresql://` are both accepted). Falls back to SQLite for dev |
-| `SESSION_TOKEN_SECRET` | signs the chat-session token. Use a long random value |
-| `PUBLIC_BASE_URL` | base for `chat_url`, e.g. your hosted URL |
-| `ENABLE_DEBUG_ENDPOINTS` | `true` exposes the hand-write facts endpoint |
-| `LOG_LEVEL` | default `INFO` |
-| `LLM_PROVIDER` | `none` (default, fallback questions only) or `gemini` |
-| `LLM_MODEL` | required with a provider: copy the current model id from Google AI Studio |
-| `GEMINI_API_KEY` | key from Google AI Studio |
-| `LLM_TIMEOUT_SECONDS` / `LLM_TURN_TIMEOUT_SECONDS` / `MAX_QUESTIONS` | default `8` / `4` / `7` |
-| `FRAME_ANCESTORS` | default `*`: origins allowed to embed the chat in an iframe. Set to your admin panel's origin |
-| `STATIC_DIR` | built web app location (default `app/static`) |
-| `STT_PROVIDER` | `none` (default, voice off), `gemini` (real transcription) or `dev` (fixed stub transcript, for trying the flow) |
-| `STT_MODEL` | Gemini model for audio; falls back to `LLM_MODEL`. Copy the current model id from Google AI Studio |
-| `STT_TIMEOUT_SECONDS` / `MAX_AUDIO_BYTES` / `MAX_AUDIO_SECONDS` | default `30` / `2000000` / `75` |
-| `KEEP_AUDIO` | default `false`: audio is deleted as soon as it is transcribed |
-| `VOICE_STALE_SECONDS` / `MAX_VOICE_NOTES_PER_SESSION` | default `90` / `20` |
-| `AUTO_EXTRACT` | default `true`: start extraction in the background when a debrief completes |
-| `EXTRACTION_TIMEOUT_SECONDS` / `MAX_EXTRACTED_FACTS` / `EXTRACTION_STALE_SECONDS` | default `20` / `20` / `120` |
-| `PRECOMPUTE_PLANS` | default `true`: build the question plan in the background at intake |
+## Configuration
 
-No secrets live in the repo. API keys are stored only as SHA-256 hashes.
+Everything is an environment variable (see `.env.example`). No secrets are stored in the repo.
 
-## Host it (Neon + Render, about 15 minutes)
+| Variable | Default | Purpose |
+|---|---|---|
+| `DATABASE_URL` | SQLite `dev.db` | Postgres URL (`postgres://` and `postgresql://` both work) |
+| `SESSION_TOKEN_SECRET` | dev value | Signs chat session tokens. **Set a long random value** |
+| `PUBLIC_BASE_URL` | `http://localhost:8000` | Base of the `chat_url` returned to the admin panel |
+| `FRAME_ANCESTORS` | `*` | Origins allowed to embed the chat in an iframe. Use your panel's origin, or `'self'` for the mock panel only |
+| `ENABLE_DEBUG_ENDPOINTS` | `false` | Turns on hand-written facts and plan preview (needed by `scripts.smoke`) |
+| `LLM_PROVIDER` | `none` | `none` uses built-in fallback questions and notes; `gemini` enables the AI |
+| `LLM_MODEL` | empty | Required with a provider. Copy the current model id from Google AI Studio |
+| `GEMINI_API_KEY` | empty | Key from Google AI Studio |
+| `STT_PROVIDER` | `none` | `none` (voice off), `gemini` (real transcription), `dev` (fixed stub transcript for trying the flow) |
+| `STT_MODEL` | empty | Falls back to `LLM_MODEL` |
+| `MAX_QUESTIONS` | `7` | Hard cap on questions per debrief, follow-ups included |
+| `LLM_TIMEOUT_SECONDS` / `LLM_TURN_TIMEOUT_SECONDS` | `8` / `4` | Planning timeout / per-answer timeout |
+| `EXTRACTION_TIMEOUT_SECONDS` / `MAX_EXTRACTED_FACTS` | `20` / `20` | Extraction call timeout / cap on proposed facts |
+| `AUTO_EXTRACT` / `PRECOMPUTE_PLANS` | `true` / `true` | Start extraction when a debrief ends / plan questions in the background at intake |
+| `EXTRACTION_STALE_SECONDS` / `VOICE_STALE_SECONDS` | `120` / `90` | A job left running this long is treated as dead and can be re-run |
+| `STT_TIMEOUT_SECONDS` / `MAX_AUDIO_BYTES` / `MAX_AUDIO_SECONDS` | `30` / `2000000` / `75` | Voice limits |
+| `KEEP_AUDIO` / `MAX_VOICE_NOTES_PER_SESSION` | `false` / `20` | Audio is deleted after transcription unless set; per-session cap |
+| `SESSION_TOKEN_TTL_SECONDS` | `86400` | Lifetime of a chat token |
+| `STATIC_DIR` / `LOG_LEVEL` | `app/static` / `INFO` | Location of the built UI / log level |
 
-1. **Database:** create a project at neon.tech, copy the connection string (keep `?sslmode=require`).
-2. **Code:** push this folder to a private GitHub repo.
-3. **Render:** New > Blueprint (reads `render.yaml`), or New > Web Service > Docker. Set
-   `DATABASE_URL` to the Neon string. Leave `PUBLIC_BASE_URL` empty for the first deploy.
-   `SESSION_TOKEN_SECRET` is generated for you.
-4. After the first deploy, set `PUBLIC_BASE_URL` to the Render URL (e.g. `https://profile-builder.onrender.com`)
-   and redeploy. Migrations run automatically on every start.
-5. **Seed from your laptop** (Render's free plan has no shell), pointing at Neon:
+**To enable the AI features:** set `LLM_PROVIDER=gemini`, `LLM_MODEL=<model id>` and `GEMINI_API_KEY`; add `STT_PROVIDER=gemini`
+for voice. Without them everything still works: questions come from built-in task-aware templates, answers are treated as clear,
+and the agent's own words are offered as notes to save. Voice is hidden unless `STT_PROVIDER` is set. Recording needs HTTPS
+(or localhost), and inside an iframe the host page must allow it with `<iframe allow="microphone">`.
+
+## Deploying (Neon + Render)
+
+1. **Database:** create a project at neon.tech and copy the connection string (keep `?sslmode=require`).
+2. **Code:** push this repository to GitHub.
+3. **Render:** New > Blueprint (reads `render.yaml`) or New > Web Service > Docker. Set `DATABASE_URL` to the Neon string.
+   The image builds the UI in a Node stage and runs migrations on every start. `SESSION_TOKEN_SECRET` is generated.
+4. After the first deploy set `PUBLIC_BASE_URL` to the Render URL and redeploy. Optionally set `FRAME_ANCESTORS` to `'self'`
+   and add the `LLM_*`, `GEMINI_API_KEY` and `STT_*` variables.
+5. **Seed from your machine** (the free plan has no shell), pointing at Neon:
    ```bash
    pip install -r requirements.txt
-   DATABASE_URL='<neon url>' python -m scripts.seed
+   DATABASE_URL='<neon url>' python -m scripts.seed      # prints the demo keys once; --new-keys mints more
    ```
-   Save the printed keys. They cannot be shown again (`--new-keys` mints more).
-6. **Verify the hosted app:**
-   ```bash
-   BASE_URL=https://<your-app>.onrender.com API_KEY=<tn_acme key> python -m scripts.smoke
-   ```
-   Open `https://<your-app>.onrender.com/docs` for Swagger.
+6. **Verify:** `BASE_URL=https://<app>.onrender.com API_KEY=<tn_acme key> python -m scripts.smoke`, then open `/admin`.
 
-Notes: free web services on Render sleep when idle, so the first request after a pause can take
-a while. Check current free-tier behaviour, and consider a cheap always-on plan for review week.
-The same Dockerfile works on Fly.io or Railway (it honours `$PORT`).
+As far as I know, free web services on Render sleep when idle, so the first request after a pause can take up to a minute.
+Check the current free-tier behaviour, or use a cheap always-on plan during review. The same Dockerfile works on Fly.io or Railway.
+`render.yaml` sets `ENABLE_DEBUG_ENDPOINTS=true` for demos; turn it off for anything real.
 
-## API (all need `X-API-Key`)
+## API at a glance
+
+All endpoints are in the OpenAPI page at `/docs`. "Key" means the `X-API-Key` header; "Key or token" also accepts the
+`X-Session-Token` header from a session's `chat_url`, which only works for that one session.
+
+| Method and path | Auth | Purpose |
+|---|---|---|
+| `POST /v1/sessions` | Key | Create a debrief session (idempotent): 201 new, 200 repeat, 409 key reused for another task, 403 tenant mismatch |
+| `GET /v1/sessions/{id}` | Key | Session status and a fresh `chat_url` |
+| `POST /v1/sessions/{id}/debrief/start` | Key or token | Open the debrief: intro and first question (idempotent) |
+| `GET /v1/sessions/{id}/debrief` | Key or token | Conversation state: messages, question statuses, progress |
+| `POST /v1/sessions/{id}/debrief/answer` | Key or token | Answer, skip or end; optional `voice_note_id` |
+| `POST /v1/sessions/{id}/voice?question_id=` | Key or token | Upload a recording (raw audio body); returns a job to poll |
+| `GET /v1/sessions/{id}/voice/{note_id}` | Key or token | Poll the transcription job; the transcript is a draft to edit |
+| `POST /v1/sessions/{id}/voice/{note_id}/retry` | Key or token | Retry a failed transcription |
+| `GET /v1/sessions/{id}/extraction` | Key or token | Proposed facts with evidence quotes |
+| `POST /v1/sessions/{id}/extraction` | Key or token | Re-run extraction (until confirmed) |
+| `POST /v1/sessions/{id}/extraction/confirm` | Key or token | Keep, edit or discard facts and save them |
+| `GET /v1/profiles/{end_user_id}` | Key | Merged profile: current facts and metadata |
+| `GET /v1/profiles/{end_user_id}/history` | Key | Every version of every fact, with source sessions |
+| `GET /v1/profiles/{end_user_id}/context?max_tokens=` | Key | LLM-ready text block within a token budget; `format=text` for plain text |
+| `GET /v1/whoami` | Key | Tenant of the key |
+| `GET /health` | None | Process and database check |
+| `POST /v1/profiles/{id}/facts`, `POST /v1/sessions/{id}/plan-preview` | Key, dev only | Hand-written facts and plan preview (`ENABLE_DEBUG_ENDPOINTS`) |
 
 ```bash
-# create a session (idempotent: repeat the call and you get 200 + the same session_id)
-curl -X POST $BASE/v1/sessions -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{
+# create a session (repeat the call and you get 200 with the same session_id)
+curl -X POST $BASE/v1/sessions -H "X-API-Key: $KEY" -H "Content-Type: application/json" -d '{
   "idempotency_key":"task_8f3a21","tenant_id":"tn_acme",
   "agent":{"id":"ag_104","name":"Priya S."},"end_user":{"id":"eu_55021","display_name":"Rahul M."},
   "task":{"id":"task_8f3a21","type":"refund_dispute","title":"Refund for damaged order #44871","channel":"whatsapp"},
   "locale":"en-IN"}'
 
-# write facts by hand (dev only), using the session_id from above
-curl -X POST $BASE/v1/profiles/eu_55021/facts -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{
-  "source_session_id":"ss_...","facts":[{"category":"contact_preferences","key":"preferred_channel",
-  "value":"whatsapp","confidence":0.95,"evidence":"only whatsapp"}]}'
-
-curl $BASE/v1/profiles/eu_55021                       -H "X-API-Key: $API_KEY"   # merged current facts
-curl $BASE/v1/profiles/eu_55021/history               -H "X-API-Key: $API_KEY"   # every version + sessions
-curl "$BASE/v1/profiles/eu_55021/context?max_tokens=150" -H "X-API-Key: $API_KEY" # LLM-ready text
+curl -H "X-API-Key: $KEY" $BASE/v1/profiles/eu_55021                          # merged profile
+curl -H "X-API-Key: $KEY" "$BASE/v1/profiles/eu_55021/context?max_tokens=150"  # e.g. "Rahul M. (eu_55021): Contact: preferred channel whatsapp; ..."
 ```
 
-Status codes: `201` new session, `200` duplicate call, `401` bad key, `403` body tenant differs from key,
-`404` unknown or other-tenant resource, `409` idempotency key reused for a different task, `422` invalid body.
+## Repository layout
 
-## Design decisions (short)
+```
+app/          FastAPI service
+              api.py (routes) · debrief.py, planner.py, interpreter.py, extraction.py, voice.py, services.py (rules)
+              repo.py (the only code that queries tenant data) · models.py · llm/ · stt/ · prompts/ (versioned) · web.py
+web/          React + TypeScript app: embeddable chat, mock admin panel, profile viewer (with tests)
+migrations/   Alembic, 0001 to 0004
+scripts/      seed.py (demo tenants and keys), smoke.py (end-to-end check)
+tests/        backend tests: isolation, idempotency, debrief, extraction, voice, web
+docs/         design-note.pdf/.md · diagrams/ · decisions/ (13 records) · slices.md (what changed in each step)
+AGENTS.md     rules for contributors and coding agents
+Dockerfile · docker-compose.yml · render.yaml · .env.example
+```
 
-- **Isolation in one place.** `repo.ScopedRepo` is built from the tenant behind the API key; its methods take no
-  tenant argument. The schema backs it up with composite keys: `agents` and `end_users` are keyed by
-  `(tenant_id, id)`, and a fact's end user and source session must exist in the same tenant.
-  Cross-tenant lookups return 404, not 403, so existence never leaks.
-- **Idempotency.** Unique `(tenant_id, idempotency_key)`. The insert runs in a savepoint; if a concurrent call wins,
-  the loser loads the winner's row. Same key with a different task or user gives 409.
-- **Conflict rule v1.** Latest write for a `(category, key)` supersedes the old row, which stays in history with its
-  source session. Same value again is a no-op. Duplicate keys inside one batch keep the highest confidence.
-  A partial unique index (`WHERE is_current`) guarantees one current value per key. Writers are serialised per
-  profile with a row lock.
-- **One write path.** `services.apply_facts` is what the Day 2 extractor will call, so hand-written and
-  LLM-written facts follow the same rule. `provenance` (JSON) is where the prompt version and tool call will go.
-- **Read path has no LLM.** The context block is built deterministically; lowest-priority categories are dropped
-  first to fit `max_tokens` (about 4 characters per token).
-- **Sync SQLAlchemy.** Simpler to test and plenty for the stated read rate; noted for the design note.
+## Documentation map
 
-## Known limitations (honest list)
+| Document | What it answers |
+|---|---|
+| [docs/design-note.pdf](docs/design-note.pdf) | Key decisions, scaling analysis, limitations, what comes next |
+| [docs/diagrams/](docs/diagrams/) | Architecture and request flow, data model (SVG and PNG; `generate.py` rebuilds them) |
+| [docs/decisions/](docs/decisions/README.md) | One short record per major decision: context, choice, alternatives, consequences |
+| [docs/slices.md](docs/slices.md) | The build history in six steps and how to verify each |
+| [AGENTS.md](AGENTS.md) | The rules the code relies on (isolation, single write path, no LLM on reads) |
 
-- Multi-valued keys (e.g. several avoided channels) overwrite each other unless the value is a list.
-- Token counting is a character estimate, not a real tokenizer.
-- No rate limiting, key rotation endpoint or webhook yet. Keys are created with `scripts/seed.py`.
-- `chat_url` points to a page that does not exist until Day 2.
+## Limitations and what was cut
 
-## The web app (chat, mock admin panel, profile viewer)
+- **Not built:** a separate worker with a jobs table, the `profile.updated` webhook, the dashboard, the PII redaction toggle,
+  and the demo video.
+- **Providers were not exercised for real here.** LLM and speech behaviour was tested with scripted outputs, HTTP mocks and a
+  stub, so real prompt quality (follow-ups, covered-question detection, extraction accuracy, mixed Hindi and English speech) is
+  unmeasured. There is no evaluation set yet.
+- **The UI has not been seen in a real browser.** It was tested with component tests and an end-to-end run in a simulated
+  browser. The microphone path is untested on real devices.
+- **The Docker image build was not run in the development sandbox;** its steps (`npm ci`, build, migrations, tests) were run individually.
+- Background jobs are in-process, so a restart can leave a job to be re-run on the next poll. There is no rate limiting,
+  key rotation endpoint, session-token revocation or transcript retention policy. Multi-valued fact keys overwrite unless the
+  value is a list. The chat can be framed by any site until `FRAME_ANCESTORS` is set.
+- The evidence check proves a quote exists, not that the value is the right reading of it. The agent's review is the backstop.
+EOF
+cat > REVIEWER_GUIDE.md <<'EOF'
+# Reviewer guide: test the hosted app
 
-Open `https://<your-app>/admin`, paste a tenant API key, and press **Debrief** on a task: the chat opens in an iframe,
-the AI asks its questions, and after the last one you review the proposed facts (edit or discard), then Save. The
-**Profile viewer** tab shows current facts with confidence, evidence and source, the history of each fact, and the
-LLM-ready context block. Pressing Debrief on the same task again resumes the same session (idempotency); tick
-"Start a fresh session" for a new one. The pasted key is a demo shortcut: a real admin panel calls `POST /v1/sessions`
-from its server and only gives the browser the `chat_url`.
+About 10 minutes. You need three things from the submission email:
 
-To embed the chat yourself: create a session, then `<iframe src="{chat_url}" allow="microphone">` (the `allow` attribute is what lets an
-embedded page record voice). Set `FRAME_ANCESTORS` to your panel's
-origin. When the agent saves, the chat posts `{type: "profile-builder:saved", session_id, saved, discarded}` to the
-parent page.
+- `<APP_URL>`, the app address
+- `<ACME_KEY>`, the API key for tenant `tn_acme`
+- `<GLOBEX_KEY>`, the API key for tenant `tn_globex` (only used for the isolation check)
 
-Build and test the app locally (Node 20+):
+If the app has been idle, the first request can take up to a minute to wake up.
+
+## 1. Check it is up (30 seconds)
+
+1. Open `<APP_URL>/health`. Expect `{"status":"ok","db":"ok"}`.
+2. Open `<APP_URL>/docs` (Swagger). Click **Authorize** and paste `<ACME_KEY>`.
+
+## 2. Run the full loop on a refund task (3 minutes)
+
+1. Open `<APP_URL>/admin`, paste `<ACME_KEY>` and press **Connect**. You see "Tenant tn_acme" and four closed tasks.
+2. Press **Debrief** on "Refund for damaged order #44871". The chat opens on the right with an intro
+   ("Quick debrief on Rahul M. ...") and one question at a time ("Question 1 of up to 7").
+3. Answer the questions in turn (type and press Enter):
+   - `he said never email him, only whatsapp, and not after 9pm`
+   - press **Skip** on the next one
+   - `his wife places most orders, he just handles complaints`
+   - `he asked for store credit instead of refund next time`
+4. After the last answer you see "Preparing your summary…", then **Here's what I'll save**. Each fact shows a confidence badge
+   and **You said: "..."**, a quote from your own words.
+5. Edit one value, press **Discard** on another fact, then press **Save**. Expect **Saved ✓** in the chat and a
+   "Profile updated" message in the panel.
+
+If the AI is enabled, the questions are tailored to refunds and adapt to your answers. If it is not enabled you will see
+built-in question templates and your own words offered as notes. Both are expected behaviour.
+
+## 3. Look at the profile (1 minute)
+
+Press **Profile** on that task (or open the **Profile viewer** tab). Expect the current facts with confidence, the evidence
+quote and the source session, an "edited by agent" tag on the fact you edited, no trace of the one you discarded, and the
+LLM-ready context block at the bottom.
+
+## 4. Check idempotency and resume (30 seconds)
+
+Go back to **Closed tasks** and press **Debrief** on the same refund task again. Expect "Resumed existing session" and the
+finished conversation with **Saved ✓**, not a duplicate. Tick "Start a fresh session each time" to run it again from the start.
+
+## 5. Try a different task type (2 minutes)
+
+Press **Debrief** on "Set up a new business account" (Meera T.). The questions differ from the refund ones, leaning toward
+products, communication style and constraints. Answer, review, save, then open her profile.
+
+## 6. Contradict an old fact and read the history (1 minute)
+
+Press **Debrief** on "Move delivery slot for order #45102" (Rahul again) and answer that he now prefers SMS in the morning, for
+example `he now wants SMS, mornings only, no whatsapp`. Save. In the Profile viewer for `eu_55021`, open **History** for the
+changed fact: the old value is marked **superseded** with its original session, and the new one is **current**.
+
+## 7. Voice (optional, 1 minute)
+
+If the chat shows a **🎤 Record** button, voice is enabled. Press it, allow the microphone, speak for a few seconds and press
+**Stop**. The transcript appears in the text box: edit it, then send. No button means voice is off on this deployment.
+
+## 8. Check the API directly (2 minutes)
 
 ```bash
-cd web && npm ci
-npm test                    # component tests with a mocked API
-npm run build:api           # builds and copies into app/static so the API serves it
-npm run dev                 # optional: Vite dev server on :5173, proxies /v1 to :8000
-LIVE_API=http://localhost:8000 LIVE_API_KEY=pk_... npm run test:live   # real chat vs a running server
-```
-The Docker image builds the app in a Node stage, so `docker compose up --build` serves it with no extra steps.
+APP=<APP_URL>; KEY=<ACME_KEY>; G=<GLOBEX_KEY>
 
-## Voice answers
+# merged profile, history and LLM-ready context (no LLM call on these reads)
+curl -s -H "X-API-Key: $KEY" $APP/v1/profiles/eu_55021
+curl -s -H "X-API-Key: $KEY" $APP/v1/profiles/eu_55021/history
+curl -s -H "X-API-Key: $KEY" "$APP/v1/profiles/eu_55021/context?max_tokens=150"
 
-Set `STT_PROVIDER=gemini` (with `GEMINI_API_KEY` and `STT_MODEL` or `LLM_MODEL`) and a 🎤 button appears in the chat. The agent
-records up to 60 seconds, the audio is transcribed in the background, and the transcript lands in the text box as an editable
-draft: fix it, then Send. Recording needs HTTPS (or localhost) and, inside an iframe, `allow="microphone"` on the iframe.
-`STT_PROVIDER=dev` returns a fixed stub transcript so you can see the whole flow without a key.
+# idempotent intake: prints 201, then 200 for the identical repeat
+BODY='{"idempotency_key":"review-1","tenant_id":"tn_acme","agent":{"id":"ag_104","name":"Priya S."},"end_user":{"id":"eu_55021","display_name":"Rahul M."},"task":{"id":"review-1","type":"refund_dispute","title":"Review test"}}'
+for i in 1 2; do curl -s -o /dev/null -w "%{http_code}\n" -X POST $APP/v1/sessions -H "X-API-Key: $KEY" -H "Content-Type: application/json" -d "$BODY"; done
 
-```bash
-# raw audio as the body; question_id must be the current question. webm, ogg, mp4, wav and mp3 are accepted
-curl -X POST "$BASE/v1/sessions/$SID/voice?question_id=$QID&duration_ms=4000" -H "X-Session-Token: $TOKEN" \
-  -H "Content-Type: audio/webm" --data-binary @answer.webm              # 202: {id, status: "queued", ...}
-curl $BASE/v1/sessions/$SID/voice/$NOTE_ID -H "X-Session-Token: $TOKEN"   # poll: queued | running | done (transcript) | failed (error)
-curl -X POST $BASE/v1/sessions/$SID/voice/$NOTE_ID/retry -H "X-Session-Token: $TOKEN"
-# send the (edited) transcript as the answer and say where it came from
-curl -X POST $BASE/v1/sessions/$SID/debrief/answer -H "X-Session-Token: $TOKEN" -H "Content-Type: application/json" \
-  -d '{"question_id":"dq_...","action":"answer","text":"he wants WhatsApp only","voice_note_id":"vn_..."}'
-```
-Audio is never served by any endpoint and is deleted as soon as it is transcribed (a failed note keeps it so it can be retried).
-Try it against a running server: `SMOKE_VOICE_FILE=answer.webm python -m scripts.smoke`.
-
-## The debrief conversation
-
-```bash
-# session_id and the token inside chat_url come from POST /v1/sessions
-curl -X POST $BASE/v1/sessions/$SID/debrief/start -H "X-Session-Token: $TOKEN"        # intro + first question
-curl -X POST $BASE/v1/sessions/$SID/debrief/answer -H "X-Session-Token: $TOKEN" -H "Content-Type: application/json" \
-  -d '{"question_id":"<current_question_id from the last response>","action":"answer","text":"only whatsapp, not after 9pm"}'
-#   action: "answer" | "skip" | "end"     (typing "skip" also skips)
-curl $BASE/v1/sessions/$SID/debrief -H "X-Session-Token: $TOKEN"                      # state, messages, progress
-```
-Debrief endpoints accept `X-Session-Token` (embedded chat) or `X-API-Key` (admin panel). Each response is the full
-state (`state`: not_started | active | complete, `current_question_id`, `progress`, `questions`, `messages`).
-`409` means the debrief is complete or not started, or `question_id` is stale (a double-submit).
-Without an LLM it runs on the fallback questions with no adaptivity; with one, answers can trigger a
-follow-up or skip questions the agent already covered.
-
-## Extraction and confirm
-
-```bash
-# when the debrief completes, extraction starts by itself; poll until status is "ready"
-curl $BASE/v1/sessions/$SID/extraction -H "X-Session-Token: $TOKEN"
-#   -> facts: [{id, category, key, value, confidence, evidence, status: "proposed"}], source: llm | fallback | none
-# save: facts you don't list are kept; edit or discard explicitly
-curl -X POST $BASE/v1/sessions/$SID/extraction/confirm -H "X-Session-Token: $TOKEN" -H "Content-Type: application/json" \
-  -d '{"decisions":[{"fact_id":"xf_...","action":"edit","value":"21:30 local"},{"fact_id":"xf_...","action":"discard"}]}'
-curl -X POST $BASE/v1/sessions/$SID/extraction -H "X-Session-Token: $TOKEN"   # retry/re-run (until confirmed)
-```
-Every proposed fact carries an evidence quote that is verified to appear in the agent's answers; anything that fails
-(or has low confidence, a bad key, a duplicate) is dropped and recorded. With no LLM, or if it fails, the agent's own
-answers are offered as `notes` so nothing is lost. Nothing reaches the profile until confirmed; saved facts record the
-prompt version, model and whether the agent edited them in `provenance`.
-
-## Try the question planner
-
-```bash
-# 1. create a session (see API section), note its session_id
-# 2. preview the plan: without an LLM key this returns source "fallback"
-curl -X POST $BASE/v1/sessions/ss_.../plan-preview -H "X-API-Key: $API_KEY"
-# 3. with LLM_PROVIDER=gemini, LLM_MODEL=<id>, GEMINI_API_KEY=<key> set, source becomes "llm"
+# isolation between tenants
+curl -s -o /dev/null -w "%{http_code}\n" -H "X-API-Key: $G" $APP/v1/profiles/eu_55022   # 404: Meera exists only in tn_acme
+curl -s -H "X-API-Key: $G" $APP/v1/profiles/eu_55021                                      # same id in tn_globex: a separate profile, no Acme facts
+curl -s -o /dev/null -w "%{http_code}\n" -X POST $APP/v1/sessions -H "X-API-Key: $G" -H "Content-Type: application/json" -d "$BODY"   # 403: body says tn_acme
+curl -s -o /dev/null -w "%{http_code}\n" $APP/v1/profiles/eu_55021                       # 401: no key
 ```
 
-## Docs
+## What good looks like
 
-`AGENTS.md` (rules for contributors and coding agents), `docs/decisions/` (why each major choice was made),
-`docs/slices.md` (what each slice changed and how to verify it).
+| Check | Expected |
+|---|---|
+| Health and docs | `ok` and a Swagger page |
+| Refund debrief | One question at a time, at most 7, skip and end work, no invented facts |
+| Review screen | Every fact has an evidence quote from your words; edit and discard work |
+| Saved profile | Facts appear in the viewer with confidence, evidence and source; edits are tagged |
+| Repeat Debrief | Resumes the same session |
+| Different task type | Different questions |
+| Contradiction | Old value kept as history, new value current |
+| API | 201 then 200 for repeats; other tenant gets 404 or an empty separate profile; wrong tenant in the body gets 403; no key gets 401 |
