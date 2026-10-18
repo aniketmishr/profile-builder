@@ -59,5 +59,15 @@ Each slice is a small, shippable change. For every slice: goal, decisions (ADRs)
   start the server with `STT_PROVIDER=dev` and run `LIVE_VOICE=1 npm run test:live` or
   `SMOKE_VOICE_FILE=any.webm python -m scripts.smoke`. For real speech set `STT_PROVIDER=gemini`.
 
+## Slice 6: submission documents
+- **Goal:** the written deliverables a reviewer needs: a test script for the hosted app, the design note, and the two diagrams.
+- **ADRs:** none (documentation only, no behaviour change).
+- **Changed:** `REVIEWER_GUIDE.md`; `docs/design-note.md` and `.pdf` (built by `docs/build_design_note_pdf.py`);
+  `docs/diagrams/` (`architecture` and `data-model`, SVG and PNG, rebuilt by `generate.py`); README (removed a stray shell
+  heredoc from the end, added the guide to the layout); this file.
+- **Verify:** open the README links (guide, design note, both diagrams); `python docs/diagrams/generate.py` and
+  `python docs/build_design_note_pdf.py` rebuild the files; follow `REVIEWER_GUIDE.md` against the hosted app.
+
 ## Next
-- Worker + jobs table (replace in-process background tasks), `profile.updated` webhook, profile viewer, polish.
+- Worker + jobs table (replace in-process background tasks), `profile.updated` webhook, dashboard, PII redaction toggle.
+  (The profile viewer was built in slice 4.)
